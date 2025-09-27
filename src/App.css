@@ -1,0 +1,167 @@
+/* ---------- Theme tokens ---------- */
+:root{
+  --bg1: #0f172a;           /* slate-900 */
+  --bg2: #1e293b;           /* slate-800 */
+  --card: rgba(255,255,255,0.08);
+  --accent: #3b82f6;        /* blue-500 */
+  --accent-2: #60a5fa;      /* blue-400 */
+  --text: #e5e7eb;          /* gray-200 */
+  --muted: #94a3b8;         /* slate-400 */
+  --ring: rgba(59,130,246,0.35);
+}
+
+/* ---------- Page + root ---------- */
+html, body, #root{
+  height: 100%;
+}
+
+body{
+  margin: 0;
+  background:
+    radial-gradient(1200px 600px at 10% 0%, rgba(59,130,246,0.15), transparent 60%),
+    radial-gradient(1000px 600px at 90% 100%, rgba(147,51,234,0.12), transparent 60%),
+    linear-gradient(180deg, var(--bg1), var(--bg2));
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+}
+
+#root{
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+  animation: fadeIn .45s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- Card helper (if you use it) ---------- */
+.card{
+  background: var(--card);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  padding: 1.5rem;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+}
+
+/* ---------- Video stage ---------- */
+.video-container{
+  width: 640px;
+  height: 480px;
+  position: relative;
+  margin: 1rem auto 0 auto;
+  background: #000;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow:
+    0 10px 30px rgba(0,0,0,0.35),
+    0 0 0 2px rgba(255,255,255,0.03),
+    0 0 40px var(--ring);            /* subtle glow */
+}
+
+/* If you use Tailwind’s absolute canvas/video, this still helps */
+.video-container video,
+.video-container canvas{
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: -webkit-optimize-contrast;
+}
+
+/* ---------- Buttons polish (works alongside Tailwind) ---------- */
+button{
+  transition: transform .08s ease, box-shadow .2s ease, background-color .2s ease;
+  will-change: transform;
+}
+button:active{
+  transform: translateY(1px) scale(0.995);
+}
+.btn-primary{
+  background: var(--accent);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: .75rem 1.25rem;
+  box-shadow: 0 8px 20px rgba(59,130,246,0.25);
+}
+.btn-primary:hover{ background: var(--accent-2); }
+
+/* Mode toggle (if you want pill look) */
+.mode-toggle{
+  display: inline-flex;
+  gap: .5rem;
+  background: var(--card);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  padding: .25rem;
+}
+.mode-toggle button{
+  border-radius: 999px;
+  padding: .5rem 1rem;
+  color: var(--muted);
+  background: transparent;
+}
+.mode-toggle button.is-active{
+  color: #0b1220;
+  background: white;
+}
+
+/* ---------- Feedback panel ---------- */
+.feedback{
+  background: rgba(59,130,246,0.12);
+  color: #dbeafe;
+  border: 1px solid rgba(59,130,246,0.35);
+  border-radius: 12px;
+  padding: .75rem 1rem;
+  box-shadow: 0 6px 18px rgba(59,130,246,0.18) inset;
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 760px){
+  .video-container{
+    width: 100%;
+    height: auto;
+    aspect-ratio: 4 / 3;
+  }
+  #root{ padding: 1rem; }
+}
+/* background + typography (optional if you already have) */
+body{
+  background: radial-gradient(1200px 600px at 10% 0%, rgba(59,130,246,.10), transparent 60%),
+              radial-gradient(900px 500px at 90% 100%, rgba(147,51,234,.10), transparent 60%),
+              #0f172a; /* slate-900 */
+  color: #e5e7eb;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* keep your .video-container rules; just ensure absolute stacking */
+.video-container{ position: relative; width: 100%; aspect-ratio: 16/10; background:#000; }
+.video-container video, .video-container canvas{
+  position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
+}
+
+/* subtle rounded card around the stage */
+.video-shell{
+  background: #0b1220;                         /* deep slate */
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.06),
+              0 20px 40px rgba(0,0,0,.45);
+  border: 1px solid rgba(255,255,255,.06);
+}
+.video-inner{
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.06),
+              0 12px 24px rgba(0,0,0,.35);
+}
+
+/* stat bar shadow */
+.stat-shadow{
+  box-shadow: 0 6px 20px rgba(2,6,23,.35);
+}
+
