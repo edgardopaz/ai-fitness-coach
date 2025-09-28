@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import "./App.css";
 import { Volume2 } from "lucide-react";
 import plankDemo from "./assets/Alien_Plank_Exercise_Animation_Generated.mp4";
@@ -279,7 +279,7 @@ export default function App() {
 
   return (
     <div className="app-background">
-      <div className="app-ribbon">owl hawks 2025</div>
+      <div className="app-ribbon">Owl Hacks 2025</div>
       <div className="app-frame">
         <header className="app-header">
           <div className="brand">
@@ -289,7 +289,7 @@ export default function App() {
               className="brand-logo"
             />
             <div>
-              <p className="brand-title">AI Form Coach</p>
+              <p className="brand-title">Formwise</p>
               <p className="brand-subtitle">Real-time MediaPipe biomechanics</p>
             </div>
           </div>
