@@ -102,18 +102,64 @@ body {
 }
 
 .app-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1.5rem;
 }
 
-.header-tools {
+.header-nav {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  justify-content: center;
+  z-index: 1;
+}
+
+.header-actions {
   display: inline-flex;
   align-items: center;
   gap: 0.75rem;
-  flex-wrap: wrap;
   justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.nav-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.nav-button {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.nav-button:hover,
+.nav-button:focus-visible {
+  outline: none;
+  color: var(--text-primary);
+  background: rgba(96, 165, 250, 0.18);
+}
+
+.nav-button.is-active {
+  color: #f8fafc;
+  background: var(--accent-strong);
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.35);
 }
 
 .mode-chip {
@@ -523,6 +569,41 @@ body {
   text-transform: uppercase;
 }
 
+.about-page {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: clamp(1.5rem, 2vw + 1rem, 3rem);
+}
+
+.about-card {
+  max-width: 680px;
+  width: 100%;
+  background: var(--surface-alt);
+  border-radius: 28px;
+  border: 1px solid var(--border);
+  padding: clamp(1.75rem, 3vw, 2.75rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.2rem;
+  box-shadow: 0 24px 50px rgba(8, 15, 35, 0.45);
+  text-align: center;
+}
+
+.about-card h1 {
+  margin: 0;
+  font-size: clamp(1.5rem, 1.8vw + 1.3rem, 2rem);
+}
+
+.about-card p {
+  margin: 0;
+  max-width: 520px;
+  line-height: 1.7;
+  color: rgba(226, 232, 240, 0.85);
+}
+
 @media (max-width: 1080px) {
   .app-frame {
     border-radius: 28px;
@@ -549,7 +630,26 @@ body {
 
   .app-header {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .header-nav {
+    position: static;
+    transform: none;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .nav-buttons {
+    display: flex;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: center;
   }
 
   .mode-switch {
