@@ -7,9 +7,15 @@ import {
   type PoseLandmarkerResult,
 } from "@mediapipe/tasks-vision";
 
-export type SupportedMode = "squat" | "plank";
+export type SupportedMode = "squat" | "plank" | "pushup" | "pullup" | "jumpingJack";
 
-const SUPPORTED_MODES: readonly SupportedMode[] = ["squat", "plank"];
+const SUPPORTED_MODES: readonly SupportedMode[] = [
+  "squat",
+  "plank",
+  "pushup",
+  "pullup",
+  "jumpingJack",
+];
 
 const SPEECH_COOLDOWN_MS = 3000;
 const STANDING_KNEE_ANGLE = 165;
@@ -19,10 +25,6 @@ const MIN_KNEE_WIDTH_RATIO = 0.75;
 const HIP_RETURN_TOLERANCE = 0.018;
 const HIP_BELOW_KNEE_THRESHOLD = 0.02;
 const FRONT_KNEE_ANGLE_MAX = 125;
-
-const VISION_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm";
-const POSE_MODEL_URL =
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 
 const STANDING_ANGLE_RELAXATION = 3;
 const BOTTOM_ANGLE_RELAXATION = 5;
@@ -35,8 +37,30 @@ const SMOOTHING_ALPHA_KNEE = 0.35;
 const SMOOTHING_ALPHA_PLANK = 0.25;
 const PLANK_WARN_FRAMES = 6;
 const PLANK_STRICT_FRAMES = 12;
+const PLANK_STRONG_ANGLE = 165;
+const PLANK_MIN_ANGLE = 158;
+const PLANK_TIMER_UPDATE_INTERVAL_MS = 100;
+
+const PUSHUP_TOP_ANGLE = 155;
+const PUSHUP_BOTTOM_ANGLE = 95;
+
+const PULLUP_TOP_NOSE_OFFSET = 0.02;
+const PULLUP_BOTTOM_WRIST_OFFSET = 0.18;
+
+const JACK_WIDE_ANKLE_GAP = 0.5;
+const JACK_WIDE_WRIST_GAP = 0.35;
+const JACK_CENTER_ANKLE_GAP = 0.3;
+const JACK_CENTER_WRIST_GAP = 0.28;
+
+const VISION_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm";
+const POSE_MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 
 type SquatPhase = "start" | "up" | "down";
+type PushupPhase = "setup" | "lowering" | "press";
+type PullupPhase = "hang" | "pull" | "top";
+type JackPhase = "center" | "wide";
+type PlankPhase = "setup" | "hold" | "adjust";
 type LandmarkList = ReadonlyArray<NormalizedLandmark>;
 type Point2D = readonly [number, number];
 type SpeakOptions = { immediate?: boolean };
@@ -54,6 +78,7 @@ export interface UsePoseCoachResult {
   isStarted: boolean;
   isVideoReady: boolean;
   repCount: number;
+  plankHoldMs: number;
   feedback: string;
   stateLabel: string;
   appError: string | null;
@@ -87,6 +112,10 @@ const angleBetween = (a: Point2D, b: Point2D, c: Point2D) => {
   return degrees;
 };
 
+const distance = (a: Point2D, b: Point2D) => {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+};
+
 const smoothValue = (ref: { current: number | null }, value: number | null, alpha: number) => {
   if (value === null || Number.isNaN(value)) {
     return null;
@@ -106,6 +135,7 @@ const isSupportedMode = (mode: SupportedMode | null): mode is SupportedMode => {
 export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): UsePoseCoachResult {
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
   const lastVideoTimeRef = useRef(-1);
+
   const lastSpeechTime = useRef(0);
   const standingHipRef = useRef<number | null>(null);
   const bottomHipRef = useRef<number | null>(null);
@@ -117,14 +147,23 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
   const bottomHoldFramesRef = useRef(0);
   const plankAngleRef = useRef<number | null>(null);
   const plankLowFramesRef = useRef(0);
+  const plankHoldMsRef = useRef(0);
+  const plankLastTimestampRef = useRef<number | null>(null);
+  const plankHoldActiveRef = useRef(false);
+  const lastPlankBroadcastRef = useRef(0);
 
   const [isModelReady, setIsModelReady] = useState(false);
   const [isStarted, setIsStarted] = useState(false);
   const [isVideoReady, setIsVideoReady] = useState(false);
   const [repCount, setRepCount] = useState(0);
-  const [squatState, setSquatState] = useState<SquatPhase>("start");
   const [feedback, setFeedback] = useState("Loading pose intelligence...");
   const [appError, setAppError] = useState<string | null>(null);
+  const [squatState, setSquatState] = useState<SquatPhase>("start");
+  const [pushupState, setPushupState] = useState<PushupPhase>("setup");
+  const [pullupState, setPullupState] = useState<PullupPhase>("hang");
+  const [jackState, setJackState] = useState<JackPhase>("center");
+  const [plankState, setPlankState] = useState<PlankPhase>("setup");
+  const [plankHoldMs, setPlankHoldMs] = useState(0);
 
   const speak = useCallback(
     (text: string, options: SpeakOptions = {}) => {
@@ -179,6 +218,18 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     bottomHoldFramesRef.current = 0;
     plankAngleRef.current = null;
     plankLowFramesRef.current = 0;
+    plankHoldMsRef.current = 0;
+    plankLastTimestampRef.current = null;
+    plankHoldActiveRef.current = false;
+    lastPlankBroadcastRef.current = 0;
+
+    setRepCount(0);
+    setSquatState("start");
+    setPushupState("setup");
+    setPullupState("hang");
+    setJackState("center");
+    setPlankState("setup");
+    setPlankHoldMs(0);
   }, []);
 
   const analyzeSquat = useCallback(
@@ -287,7 +338,9 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
 
           standingHipRef.current = standingHipRef.current === null ? hipY : Math.min(standingHipRef.current, hipY);
           bottomHipRef.current = null;
-          setSquatState("up");
+          if (squatState !== "up") {
+            setSquatState("up");
+          }
         }
 
         return;
@@ -325,8 +378,142 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     [squatState, speak, setFeedbackMessage]
   );
 
-  const analyzePlank = useCallback(
+  const analyzePushup = useCallback(
     (landmarks: LandmarkList) => {
+      const shoulder = getPoint(landmarks, 12);
+      const elbow = getPoint(landmarks, 14);
+      const wrist = getPoint(landmarks, 16);
+
+      if (!shoulder || !elbow || !wrist) {
+        return;
+      }
+
+      const elbowAngle = angleBetween(shoulder, elbow, wrist);
+
+      if (elbowAngle >= PUSHUP_TOP_ANGLE) {
+        if (pushupState === "lowering") {
+          setRepCount((previous) => {
+            const next = previous + 1;
+            speak(`Rep ${next}`, { immediate: true });
+            return next;
+          });
+        }
+        if (pushupState !== "press") {
+          setPushupState("press");
+          setFeedbackMessage("Lock out strong and reset your brace.", { silent: true });
+        }
+        return;
+      }
+
+      if (elbowAngle <= PUSHUP_BOTTOM_ANGLE) {
+        if (pushupState !== "lowering") {
+          setPushupState("lowering");
+          setFeedbackMessage("Control the drop until elbows hit about 90°.", { immediate: true });
+        }
+        return;
+      }
+
+      if (pushupState !== "setup") {
+        setPushupState("setup");
+      }
+    },
+    [pushupState, setFeedbackMessage, speak]
+  );
+
+  const analyzePullup = useCallback(
+    (landmarks: LandmarkList) => {
+      const leftWrist = getPoint(landmarks, 15);
+      const rightWrist = getPoint(landmarks, 16);
+      const leftShoulder = getPoint(landmarks, 11);
+      const rightShoulder = getPoint(landmarks, 12);
+      const nose = getPoint(landmarks, 0);
+
+      if (!leftWrist || !rightWrist || !leftShoulder || !rightShoulder || !nose) {
+        return;
+      }
+
+      const avgShoulderY = (leftShoulder[1] + rightShoulder[1]) / 2;
+      const avgWristY = (leftWrist[1] + rightWrist[1]) / 2;
+
+      if (nose[1] <= avgShoulderY + PULLUP_TOP_NOSE_OFFSET) {
+        if (pullupState === "pull") {
+          setRepCount((previous) => {
+            const next = previous + 1;
+            speak(`Rep ${next}`, { immediate: true });
+            return next;
+          });
+        }
+        if (pullupState !== "top") {
+          setPullupState("top");
+          setFeedbackMessage("Hold the top - squeeze shoulder blades together.", { silent: true });
+        }
+        return;
+      }
+
+      if (avgWristY - avgShoulderY > PULLUP_BOTTOM_WRIST_OFFSET) {
+        if (pullupState !== "hang") {
+          setPullupState("hang");
+          setFeedbackMessage("Full hang - engage lats before the next pull.", { immediate: true });
+        }
+        return;
+      }
+
+      if (pullupState !== "pull") {
+        setPullupState("pull");
+        setFeedbackMessage("Drive elbows down and lead with your chest.");
+      }
+    },
+    [pullupState, setFeedbackMessage, speak]
+  );
+
+  const analyzeJumpingJack = useCallback(
+    (landmarks: LandmarkList) => {
+      const leftAnkle = getPoint(landmarks, 27);
+      const rightAnkle = getPoint(landmarks, 28);
+      const leftWrist = getPoint(landmarks, 15);
+      const rightWrist = getPoint(landmarks, 16);
+      const leftShoulder = getPoint(landmarks, 11);
+      const rightShoulder = getPoint(landmarks, 12);
+
+      if (!leftAnkle || !rightAnkle || !leftWrist || !rightWrist || !leftShoulder || !rightShoulder) {
+        return;
+      }
+
+      const ankleGap = distance(leftAnkle, rightAnkle);
+      const wristGap = distance(leftWrist, rightWrist);
+      const avgShoulderY = (leftShoulder[1] + rightShoulder[1]) / 2;
+      const avgWristY = (leftWrist[1] + rightWrist[1]) / 2;
+
+      const isWide =
+        ankleGap > JACK_WIDE_ANKLE_GAP &&
+        wristGap > JACK_WIDE_WRIST_GAP &&
+        avgWristY < avgShoulderY;
+      const isCenter = ankleGap < JACK_CENTER_ANKLE_GAP && wristGap < JACK_CENTER_WRIST_GAP;
+
+      if (isWide) {
+        if (jackState === "center") {
+          setRepCount((previous) => previous + 1);
+        }
+        if (jackState !== "wide") {
+          setJackState("wide");
+          setFeedbackMessage("Big extension - reach tall overhead and stay light on landings.", { silent: true });
+        }
+        return;
+      }
+
+      if (isCenter) {
+        if (jackState !== "center") {
+          setJackState("center");
+          setFeedbackMessage("Snap back to center with knees softly bent.");
+        }
+        return;
+      }
+    },
+    [jackState, setFeedbackMessage]
+  );
+
+  const analyzePlank = useCallback(
+    (landmarks: LandmarkList, timestamp: number) => {
       const shoulder = getPoint(landmarks, 12);
       const hip = getPoint(landmarks, 24);
       const ankle = getPoint(landmarks, 28);
@@ -337,33 +524,71 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const bodyAngleRaw = angleBetween(shoulder, hip, ankle);
       const bodyAngle = smoothValue(plankAngleRef, bodyAngleRaw, SMOOTHING_ALPHA_PLANK) ?? bodyAngleRaw;
 
-      if (bodyAngle < 158) {
-        plankLowFramesRef.current = Math.min(plankLowFramesRef.current + 1, 120);
+      if (bodyAngle >= PLANK_STRONG_ANGLE) {
+        plankLowFramesRef.current = Math.max(plankLowFramesRef.current - 1, 0);
+
+        if (!plankHoldActiveRef.current) {
+          plankHoldActiveRef.current = true;
+          plankLastTimestampRef.current = timestamp;
+          plankHoldMsRef.current = 0;
+          lastPlankBroadcastRef.current = 0;
+          if (plankState !== "hold") {
+            setPlankState("hold");
+          }
+          setFeedbackMessage("Strong plank - stay long through your spine and keep breathing.", {
+            silent: true,
+          });
+          setPlankHoldMs(0);
+        } else if (plankLastTimestampRef.current !== null) {
+          const delta = timestamp - plankLastTimestampRef.current;
+          if (delta > 0) {
+            plankHoldMsRef.current += delta;
+            if (
+              plankHoldMsRef.current - lastPlankBroadcastRef.current >= PLANK_TIMER_UPDATE_INTERVAL_MS ||
+              plankHoldMsRef.current < lastPlankBroadcastRef.current
+            ) {
+              lastPlankBroadcastRef.current = plankHoldMsRef.current;
+              setPlankHoldMs(Math.round(plankHoldMsRef.current));
+            }
+          }
+          plankLastTimestampRef.current = timestamp;
+        }
+
+        return;
+      }
+
+      plankLowFramesRef.current += 1;
+
+      if (bodyAngle >= PLANK_MIN_ANGLE) {
+        if (plankState !== "adjust") {
+          setPlankState("adjust");
+        }
         if (plankLowFramesRef.current >= PLANK_WARN_FRAMES) {
           setFeedbackMessage("Press the floor away and lift hips in line with shoulders.", {
             immediate: plankLowFramesRef.current >= PLANK_STRICT_FRAMES,
           });
         }
-        return;
-      }
-
-      if (bodyAngle < 165) {
-        plankLowFramesRef.current = Math.min(plankLowFramesRef.current + 1, 120);
-        if (plankLowFramesRef.current >= PLANK_STRICT_FRAMES) {
-          setFeedbackMessage("Lock in a straight line from ears to heels.", { immediate: true });
+      } else {
+        if (plankState !== "adjust") {
+          setPlankState("adjust");
         }
-        return;
+        if (plankLowFramesRef.current >= PLANK_WARN_FRAMES) {
+          setFeedbackMessage("Reset the plank - squeeze glutes and stack ears over shoulders.", {
+            immediate: true,
+          });
+        }
       }
 
-      if (plankLowFramesRef.current !== 0) {
-        plankLowFramesRef.current = 0;
+      if (plankHoldActiveRef.current && plankLowFramesRef.current >= PLANK_STRICT_FRAMES) {
+        plankHoldActiveRef.current = false;
+        plankLastTimestampRef.current = null;
+        plankHoldMsRef.current = 0;
+        lastPlankBroadcastRef.current = 0;
+        setPlankHoldMs(0);
+        setPlankState("setup");
       }
-
-      setFeedbackMessage("Strong plank - stay long through your spine and keep breathing.", {
-        silent: true,
-      });
     },
-    [setFeedbackMessage]
+    [plankState, setFeedbackMessage]
   );
 
   useEffect(() => {
@@ -434,8 +659,6 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     clearPoseRefs();
     setIsStarted(false);
     setIsVideoReady(false);
-    setRepCount(0);
-    setSquatState("start");
     setFeedbackMessage("Session paused. Hit start when you want the coach back in.", {
       silent: true,
     });
@@ -445,7 +668,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     if (!isSupportedMode(mode)) {
       stop();
       setAppError(null);
-      setFeedbackMessage("Select squat or plank to run live MediaPipe tracking.", { immediate: true });
+      setFeedbackMessage("Select an exercise to run live MediaPipe tracking.", { immediate: true });
       return;
     }
 
@@ -463,8 +686,6 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     try {
       setAppError(null);
       clearPoseRefs();
-      setRepCount(0);
-      setSquatState("start");
       setFeedbackMessage("Setting up your camera...");
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -492,9 +713,10 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       setIsVideoReady(true);
       setIsStarted(true);
       setFeedbackMessage(
-        mode === "squat"
-          ? "Tracking squat mechanics - sit back, stay tall, and drive the floor away."
-          : "Tracking plank alignment - reach long, pack shoulders, and breathe."
+        mode === "plank"
+          ? "Tracking plank alignment - reach long, pack shoulders, and breathe."
+          : "Tracking form - move with tempo and stay controlled.",
+        { silent: true }
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to access the camera.";
@@ -506,36 +728,26 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
         videoElement.srcObject = null;
       }
       clearPoseRefs();
-      setRepCount(0);
-      setSquatState("start");
       setFeedbackMessage("Camera unavailable. Check permissions and try again.");
     }
   }, [mode, setFeedbackMessage, videoRef, clearPoseRefs, stop]);
 
   useEffect(() => {
     if (!isSupportedMode(mode)) {
-      if (isStarted) {
-        stop();
-      }
       clearPoseRefs();
-      setRepCount(0);
-      setSquatState("start");
-      setFeedback("MediaPipe tracking is available for the squat and plank labs.");
+      setFeedback("MediaPipe tracking is available for the selected exercises.");
       setAppError(null);
       return;
     }
 
-    if (!isStarted) {
-      clearPoseRefs();
-      setRepCount(0);
-      setSquatState("start");
-      setFeedback(
-        mode === "squat"
-          ? "Coach ready: brace tall, knees track over toes, and sit back confidently."
-          : "Coach ready: press the floor away, lengthen through the crown, and lock the core."
-      );
-    }
-  }, [isStarted, mode, stop, clearPoseRefs]);
+    clearPoseRefs();
+    setAppError(null);
+    setFeedback(
+      mode === "plank"
+        ? "Coach ready: press the floor away, lengthen through the crown, and lock the core."
+        : "Coach ready: square up to the camera and move with intent."
+    );
+  }, [mode, clearPoseRefs]);
 
   useEffect(() => {
     if (!isStarted || !isVideoReady || !isSupportedMode(mode)) {
@@ -578,7 +790,8 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
         context.save();
         context.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-        const results: PoseLandmarkerResult = landmarkerRef.current.detectForVideo(videoElement, performance.now());
+        const timestamp = performance.now();
+        const results: PoseLandmarkerResult = landmarkerRef.current.detectForVideo(videoElement, timestamp);
         const poseLandmarks = results.landmarks?.[0];
 
         if (poseLandmarks && poseLandmarks.length) {
@@ -588,10 +801,24 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
           });
           drawingUtils.drawLandmarks(poseLandmarks, { radius: 3, color: "#38bdf8" });
 
-          if (mode === "squat") {
-            analyzeSquat(poseLandmarks);
-          } else {
-            analyzePlank(poseLandmarks);
+          switch (mode) {
+            case "squat":
+              analyzeSquat(poseLandmarks);
+              break;
+            case "pushup":
+              analyzePushup(poseLandmarks);
+              break;
+            case "pullup":
+              analyzePullup(poseLandmarks);
+              break;
+            case "jumpingJack":
+              analyzeJumpingJack(poseLandmarks);
+              break;
+            case "plank":
+              analyzePlank(poseLandmarks, timestamp);
+              break;
+            default:
+              break;
           }
         }
       } catch (error) {
@@ -611,7 +838,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       context.clearRect(0, 0, canvasElement.width, canvasElement.height);
       lastVideoTimeRef.current = -1;
     };
-  }, [isStarted, isVideoReady, mode, analyzePlank, analyzeSquat, videoRef, canvasRef]);
+  }, [isStarted, isVideoReady, mode, analyzeSquat, analyzePushup, analyzePullup, analyzeJumpingJack, analyzePlank, videoRef, canvasRef]);
 
   useEffect(() => {
     const videoElement = videoRef.current;
@@ -624,25 +851,24 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
   }, [videoRef]);
 
   const stateLabel = (() => {
-    if (!isSupportedMode(mode)) {
-      return "N/A";
-    }
-
-    if (!isStarted) {
-      return "SET";
-    }
-
-    if (mode === "plank") {
-      return "HOLD";
-    }
-
-    switch (squatState) {
-      case "down":
-        return "LOW";
-      case "up":
-        return "UP";
+    switch (mode) {
+      case "squat":
+        if (!isStarted) return "SET";
+        return squatState === "down" ? "LOW" : "UP";
+      case "pushup":
+        if (!isStarted) return "SET";
+        return { setup: "SET", lowering: "LOW", press: "TOP" }[pushupState];
+      case "pullup":
+        if (!isStarted) return "SET";
+        return { hang: "HANG", pull: "PULL", top: "TOP" }[pullupState];
+      case "jumpingJack":
+        if (!isStarted) return "SET";
+        return { center: "CENTER", wide: "WIDE" }[jackState];
+      case "plank":
+        if (!isStarted) return "SET";
+        return { setup: "SET", hold: "HOLD", adjust: "FORM" }[plankState];
       default:
-        return "SET";
+        return "READY";
     }
   })();
 
@@ -652,6 +878,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     isStarted,
     isVideoReady,
     repCount,
+    plankHoldMs,
     feedback,
     stateLabel,
     appError,

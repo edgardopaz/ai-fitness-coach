@@ -117,7 +117,7 @@ const EXERCISE_CONFIG = MODE_OPTIONS.reduce(
   {} as Record<ExerciseMode, ExerciseConfig>
 );
 
-const SUPPORTED_POSE_MODES: readonly SupportedMode[] = ["squat", "plank"];
+const SUPPORTED_POSE_MODES: readonly SupportedMode[] = ["squat", "plank", "pushup", "pullup", "jumpingJack"];
 const isSupportedPoseMode = (mode: ExerciseMode): mode is SupportedMode =>
   (SUPPORTED_POSE_MODES as readonly ExerciseMode[]).includes(mode);
 
@@ -153,6 +153,20 @@ async function fetchExerciseLines(mode: ExerciseMode): Promise<string[]> {
   }
 }
 
+
+function formatHoldTime(ms: number): string {
+  if (ms <= 0) {
+    return "0.0s";
+  }
+  const totalSeconds = ms / 1000;
+  if (totalSeconds >= 60) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+    return minutes + ":" + seconds.toString().padStart(2, "0");
+  }
+  return totalSeconds.toFixed(1) + "s";
+}
+
 export default function App() {
   const [typedLines, setTypedLines] = useState<string[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -164,11 +178,13 @@ export default function App() {
   const supportedMode = isSupportedPoseMode(mode) ? mode : null;
 
   const {
+
     isModeSupported,
     isModelReady,
     isStarted,
     isVideoReady,
     repCount,
+    plankHoldMs,
     feedback: coachFeedback,
     stateLabel,
     appError,
@@ -189,14 +205,19 @@ export default function App() {
     : isModeSupported
     ? "Ready"
     : "Offline";
-  const repDisplay = isDemoPlaying || mode === "plank" || !isModeSupported ? "--" : repCount;
+  const metricLabel = mode === "plank" ? "Hold time" : "Rep counter";
+  const metricValue = isDemoPlaying
+    ? "--"
+    : mode === "plank"
+    ? formatHoldTime(plankHoldMs)
+    : String(repCount);
   const stateDisplay = isDemoPlaying ? "DEMO" : isModeSupported ? stateLabel : "N/A";
   const sessionStatus = !isModeSupported
     ? "Mode offline"
     : !isModelReady
     ? "Loading pose intelligence"
     : isStarted
-    ? "Live analysis"
+    ? (mode === "plank" && plankHoldMs > 0 ? "Hold " + formatHoldTime(plankHoldMs) : "Live analysis")
     : isVideoReady
     ? "Camera ready"
     : "Coach idle";
@@ -204,9 +225,9 @@ export default function App() {
     ? isStarted
       ? currentConfig.activeText
       : currentConfig.standbyText
-    : "MediaPipe tracking currently supports the squat and plank labs.";
+    : "MediaPipe tracking currently supports the selected labs.";
   const bannerFeedback = isDemoPlaying
-    ? "Watch the demo, then start the camera when you're ready."
+    ? "Watch the demo, then start the camera when you are ready."
     : coachFeedback || fallbackFeedback;
   const feedback = appError ? `Error: ${appError}` : bannerFeedback;
 
@@ -328,8 +349,8 @@ export default function App() {
 
             <div className="stat-card" aria-live="polite">
               <div className="stat">
-                <span className="stat-label">Rep counter</span>
-                <span className="stat-value">{repDisplay}</span>
+                <span className="stat-label">{metricLabel}</span>
+                <span className="stat-value">{metricValue}</span>
               </div>
               <div className="stat">
                 <span className="stat-label">Current state</span>
@@ -413,6 +434,9 @@ export default function App() {
     </div>
   );
 }
+
+
+
 
 
 
