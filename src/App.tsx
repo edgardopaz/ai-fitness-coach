@@ -117,7 +117,13 @@ const EXERCISE_CONFIG = MODE_OPTIONS.reduce(
   {} as Record<ExerciseMode, ExerciseConfig>
 );
 
-const SUPPORTED_POSE_MODES: readonly SupportedMode[] = ["squat", "plank", "pushup", "pullup", "jumpingJack"];
+const SUPPORTED_POSE_MODES: readonly SupportedMode[] = [
+  "squat",
+  "plank",
+  "pushup",
+  "pullup",
+  "jumpingJack",
+];
 const isSupportedPoseMode = (mode: ExerciseMode): mode is SupportedMode =>
   (SUPPORTED_POSE_MODES as readonly ExerciseMode[]).includes(mode);
 
@@ -153,7 +159,6 @@ async function fetchExerciseLines(mode: ExerciseMode): Promise<string[]> {
   }
 }
 
-
 function formatHoldTime(ms: number): string {
   if (ms <= 0) {
     return "0.0s";
@@ -169,16 +174,16 @@ function formatHoldTime(ms: number): string {
 
 export default function App() {
   const [typedLines, setTypedLines] = useState<string[]>([]);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [activePage, setActivePage] = useState<"home" | "about">("home");
   const [mode, setMode] = useState<ExerciseMode>("squat");
   const [isDemoPlaying, setIsDemoPlaying] = useState(false);
   const [demoKey, setDemoKey] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const supportedMode = isSupportedPoseMode(mode) ? mode : null;
 
   const {
-
     isModeSupported,
     isModelReady,
     isStarted,
@@ -262,6 +267,15 @@ export default function App() {
     setIsDemoPlaying(false);
   };
 
+  const handleNavigate = (page: "home" | "about") => {
+    if (page === activePage) return;
+    if (page === "about") {
+      stop();
+      setIsDemoPlaying(false);
+    }
+    setActivePage(page);
+  };
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -279,7 +293,7 @@ export default function App() {
 
   return (
     <div className="app-background">
-      <div className="app-ribbon">Owl Hacks 2025</div>
+      <div className="app-ribbon">owl hacks 2025</div>
       <div className="app-frame">
         <header className="app-header">
           <div className="brand">
@@ -289,158 +303,195 @@ export default function App() {
               className="brand-logo"
             />
             <div>
-              <p className="brand-title">Formwise</p>
+              <p className="brand-title">AI Form Coach</p>
               <p className="brand-subtitle">Real-time MediaPipe biomechanics</p>
             </div>
           </div>
-          <div className="header-tools">
-            <span className="mode-chip">{currentConfig.label}</span>
-            <div className="header-status" aria-live="polite" title={sessionStatus}>
-              <span className={`status-dot ${isStarted ? "is-live" : ""}`} />
-              <span className="status-text">{statusText}</span>
+
+          <div className="header-nav" role="navigation" aria-label="Primary">
+            <div className="nav-buttons">
+              <button
+                type="button"
+                className={`nav-button ${activePage === "home" ? "is-active" : ""}`}
+                onClick={() => handleNavigate("home")}
+              >
+                Home
+              </button>
+              <button
+                type="button"
+                className={`nav-button ${activePage === "about" ? "is-active" : ""}`}
+                onClick={() => handleNavigate("about")}
+              >
+                About
+              </button>
             </div>
           </div>
+
+          {activePage === "home" && (
+            <div className="header-actions">
+              <span className="mode-chip">{currentConfig.label}</span>
+              <div className="header-status" aria-live="polite" title={sessionStatus}>
+                <span className={`status-dot ${isStarted ? "is-live" : ""}`} />
+                <span className="status-text">{statusText}</span>
+              </div>
+            </div>
+          )}
         </header>
 
-        <main className="content-grid">
-          <section className="info-panel">
-           <h1 className="section-title">
-            {typedLines.length ? (
-              <ReactTyped
-                key={typedLines.join("|")}
-                strings={typedLines}
-                typeSpeed={50}
-                backSpeed={30}
-                backDelay={1200}
-                loop
-              />
-            ) : (
-              currentConfig.title
-            )}
-          </h1>
-            <p className="section-copy">{currentConfig.description}</p>
-
-            <div className="mode-control">
-              <label htmlFor="exercise-select" className="mode-label">
-                Exercise mode
-              </label>
-              <div className="mode-switch">
-                <select
-                  id="exercise-select"
-                  className="mode-select"
-                  value={mode}
-                  onChange={handleModeChange}
-                >
-                  {MODE_OPTIONS.map(({ id, label }) => (
-                    <option key={id} value={id}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className={`demo-button ${isDemoPlaying ? "is-active" : ""}`}
-                  onClick={isDemoPlaying ? handleCloseDemo : handleShowDemo}
-                >
-                  {isDemoPlaying ? "Close demo" : "Show me how"}
-                </button>
-              </div>
-            </div>
-
-            <div className="stat-card" aria-live="polite">
-              <div className="stat">
-                <span className="stat-label">{metricLabel}</span>
-                <span className="stat-value">{metricValue}</span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Current state</span>
-                <span className="stat-value">{stateDisplay}</span>
-              </div>
-              <div className="stat">
-                <span className="stat-label">Audio cues</span>
-                <span className="stat-icon" title="Voice feedback enabled">
-                  <Volume2 size={18} />
-                </span>
-              </div>
-            </div>
-
-            <div className="note-card">
-              <h2>Form cues for {currentConfig.label}</h2>
-              <ul>
-                {currentConfig.cues.map((cue) => (
-                  <li key={cue}>{cue}</li>
-                ))}
-              </ul>
-            </div>
-          </section>
-
-          <section className="stage-panel">
-            <div className="video-stage">
-              <div className="video-stage__header">
-                <span className="video-stage__title">{currentConfig.stageLabel}</span>
-                <span className="video-stage__chip">{stageChipLabel}</span>
-              </div>
-              <div className="video-wrapper">
-                <video
-                  ref={videoRef}
-                  className={`live-feed ${isDemoPlaying ? "is-hidden" : ""}`}
-                  playsInline
-                  muted
-                />
-                <canvas
-                  ref={canvasRef}
-                  className={`live-feed ${isDemoPlaying ? "is-hidden" : ""}`}
-                />
-                {isDemoPlaying && (
-                  <video
-                    key={`${mode}-${demoKey}`}
-                    className="demo-feed"
-                    src={DEMO_VIDEOS[mode]}
-                    autoPlay
+        {activePage === "home" ? (
+          <main className="content-grid">
+            <section className="info-panel">
+              <h1 className="section-title">
+                {typedLines.length ? (
+                  <ReactTyped
+                    key={typedLines.join("|")}
+                    strings={typedLines}
+                    typeSpeed={50}
+                    backSpeed={30}
+                    backDelay={1200}
                     loop
-                    muted
-                    playsInline
-                    controls
                   />
-                )}
-              </div>
-              <div className="stage-actions">
-                {isDemoPlaying ? (
-                  <button type="button" className="cta-button is-stop" onClick={handleCloseDemo}>
-                    Close demo
-                  </button>
-                ) : !isStarted ? (
-                  <button type="button" className="cta-button is-start" onClick={handleStart}>
-                    Start camera
-                  </button>
                 ) : (
-                  <button type="button" className="cta-button is-stop" onClick={handleStop}>
-                    Stop camera
-                  </button>
+                  currentConfig.title
                 )}
-              </div>
-            </div>
+              </h1>
+              <p className="section-copy">{currentConfig.description}</p>
 
-            <div className={`feedback-banner ${feedback ? "has-text" : ""}`}>
-              {feedback}
-            </div>
-          </section>
-        </main>
+              <div className="mode-control">
+                <label htmlFor="exercise-select" className="mode-label">
+                  Exercise mode
+                </label>
+                <div className="mode-switch">
+                  <select
+                    id="exercise-select"
+                    className="mode-select"
+                    value={mode}
+                    onChange={handleModeChange}
+                  >
+                    {MODE_OPTIONS.map(({ id, label }) => (
+                      <option key={id} value={id}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className={`demo-button ${isDemoPlaying ? "is-active" : ""}`}
+                    onClick={isDemoPlaying ? handleCloseDemo : handleShowDemo}
+                  >
+                    {isDemoPlaying ? "Close demo" : "Show me how"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="stat-card" aria-live="polite">
+                <div className="stat">
+                  <span className="stat-label">{metricLabel}</span>
+                  <span className="stat-value">{metricValue}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">Current state</span>
+                  <span className="stat-value">{stateDisplay}</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-label">Audio cues</span>
+                  <span className="stat-icon" title="Voice feedback enabled">
+                    <Volume2 size={18} />
+                  </span>
+                </div>
+              </div>
+
+              <div className="note-card">
+                <h2>Form cues for {currentConfig.label}</h2>
+                <ul>
+                  {currentConfig.cues.map((cue) => (
+                    <li key={cue}>{cue}</li>
+                  ))}
+                </ul>
+              </div>
+            </section>
+
+            <section className="stage-panel">
+              <div className="video-stage">
+                <div className="video-stage__header">
+                  <span className="video-stage__title">{currentConfig.stageLabel}</span>
+                  <span className="video-stage__chip">{stageChipLabel}</span>
+                </div>
+                <div className="video-wrapper">
+                  <video
+                    ref={videoRef}
+                    className={`live-feed ${isDemoPlaying ? "is-hidden" : ""}`}
+                    playsInline
+                    muted
+                  />
+                  <canvas
+                    ref={canvasRef}
+                    className={`live-feed ${isDemoPlaying ? "is-hidden" : ""}`}
+                  />
+                  {isDemoPlaying && (
+                    <video
+                      key={`${mode}-${demoKey}`}
+                      className="demo-feed"
+                      src={DEMO_VIDEOS[mode]}
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                      controls
+                    />
+                  )}
+                </div>
+                <div className="stage-actions">
+                  {isDemoPlaying ? (
+                    <button type="button" className="cta-button is-stop" onClick={handleCloseDemo}>
+                      Close demo
+                    </button>
+                  ) : !isStarted ? (
+                    <button type="button" className="cta-button is-start" onClick={handleStart}>
+                      Start camera
+                    </button>
+                  ) : (
+                    <button type="button" className="cta-button is-stop" onClick={handleStop}>
+                      Stop camera
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className={`feedback-banner ${feedback ? "has-text" : ""}`}>
+                {feedback}
+              </div>
+            </section>
+          </main>
+        ) : (
+          <main className="about-page">
+            <section className="about-card">
+              <h1>About AI Form Coach</h1>
+              <p>
+                AI Form Coach is our Next Frontier Health submission focused on using computer vision and
+                generative AI to bring world-class coaching to any home workout. MediaPipe pose tracking and
+                TensorFlow.js power the real-time movement analysis, while Gemini-generated cues keep every
+                session encouraging and personalized.
+              </p>
+              <p>
+                By blending motion capture with adaptive feedback, the platform highlights asymmetries,
+                poor posture, or wasted effort before they lead to injury. Each demo, cue, and rep counter
+                is grounded in biomechanics so people can safely progress—from warm-up to max-effort—in a
+                measurable, motivating way.
+              </p>
+              <p>
+                This approach supports Next Frontier Health's mission of sustainable physical wellness:
+                accessible coaching, data-backed insights, and AI guidance that scales to every athlete,
+                patient, or wellness enthusiast looking to stay active.
+              </p>
+            </section>
+          </main>
+        )}
 
         <footer className="app-footer">
-          Built for the Next Frontier Health track with React and MediaPipe
+          Built for the Next Frontier Health track with React, TensorFlow.js, and MediaPipe
         </footer>
       </div>
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
