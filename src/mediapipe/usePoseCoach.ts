@@ -37,20 +37,23 @@ const SMOOTHING_ALPHA_KNEE = 0.35;
 const SMOOTHING_ALPHA_PLANK = 0.25;
 const PLANK_WARN_FRAMES = 6;
 const PLANK_STRICT_FRAMES = 12;
+const PLANK_MAX_SHOULDER_HIP_DELTA = 0.16;
+const PLANK_MAX_HIP_ANKLE_DELTA = 0.22;
+const PLANK_STANDING_GRACE_FRAMES = 4;
 const PLANK_STRONG_ANGLE = 165;
 const PLANK_MIN_ANGLE = 158;
 const PLANK_TIMER_UPDATE_INTERVAL_MS = 100;
 
-const PUSHUP_TOP_ANGLE = 155;
-const PUSHUP_BOTTOM_ANGLE = 95;
+const PUSHUP_TOP_ANGLE = 148;
+const PUSHUP_BOTTOM_ANGLE = 110;
 
-const PULLUP_TOP_NOSE_OFFSET = 0.02;
-const PULLUP_BOTTOM_WRIST_OFFSET = 0.18;
+const PULLUP_TOP_NOSE_OFFSET = 0.04;
+const PULLUP_BOTTOM_WRIST_OFFSET = 0.14;
 
-const JACK_WIDE_ANKLE_GAP = 0.5;
-const JACK_WIDE_WRIST_GAP = 0.35;
-const JACK_CENTER_ANKLE_GAP = 0.3;
-const JACK_CENTER_WRIST_GAP = 0.28;
+const JACK_WIDE_ANKLE_GAP = 0.45;
+const JACK_WIDE_WRIST_GAP = 0.3;
+const JACK_CENTER_ANKLE_GAP = 0.32;
+const JACK_CENTER_WRIST_GAP = 0.24;
 
 const VISION_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm";
 const POSE_MODEL_URL =
@@ -147,6 +150,11 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
   const bottomHoldFramesRef = useRef(0);
   const plankAngleRef = useRef<number | null>(null);
   const plankLowFramesRef = useRef(0);
+  const pushupBottomSeenRef = useRef(false);
+  const pullupHangSeenRef = useRef(false);
+  const jackCenterReadyRef = useRef(true);
+  const lastJackFeedbackRef = useRef(0);
+  const plankStandingFramesRef = useRef(0);
   const plankHoldMsRef = useRef(0);
   const plankLastTimestampRef = useRef<number | null>(null);
   const plankHoldActiveRef = useRef(false);
@@ -222,6 +230,11 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     plankLastTimestampRef.current = null;
     plankHoldActiveRef.current = false;
     lastPlankBroadcastRef.current = 0;
+    pushupBottomSeenRef.current = false;
+    pullupHangSeenRef.current = false;
+    jackCenterReadyRef.current = true;
+    lastJackFeedbackRef.current = 0;
+    plankStandingFramesRef.current = 0;
 
     setRepCount(0);
     setSquatState("start");
@@ -390,27 +403,39 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
 
       const elbowAngle = angleBetween(shoulder, elbow, wrist);
 
-      if (elbowAngle >= PUSHUP_TOP_ANGLE) {
-        if (pushupState === "lowering") {
-          setRepCount((previous) => {
-            const next = previous + 1;
-            speak(`Rep ${next}`, { immediate: true });
-            return next;
-          });
-        }
-        if (pushupState !== "press") {
-          setPushupState("press");
-          setFeedbackMessage("Lock out strong and reset your brace.", { silent: true });
+      if (elbowAngle <= PUSHUP_BOTTOM_ANGLE) {
+        pushupBottomSeenRef.current = true;
+        if (pushupState !== "lowering") {
+          setPushupState("lowering");
+          setFeedbackMessage("Lower until chest hovers above the floor.", { immediate: true });
         }
         return;
       }
 
-      if (elbowAngle <= PUSHUP_BOTTOM_ANGLE) {
-        if (pushupState !== "lowering") {
-          setPushupState("lowering");
-          setFeedbackMessage("Control the drop until elbows hit about 90°.", { immediate: true });
+      if (elbowAngle >= PUSHUP_TOP_ANGLE) {
+        if (pushupState === "lowering") {
+          if (pushupBottomSeenRef.current) {
+            setRepCount((previous) => {
+              const next = previous + 1;
+              speak(`Rep ${next}`, { immediate: true });
+              return next;
+            });
+            setFeedbackMessage("Strong lockout - reset your brace for the next rep.", { silent: true });
+          } else {
+            setFeedbackMessage("Rep didn't count - sink a bit deeper before pressing up.", {
+              immediate: true,
+            });
+          }
+        }
+        pushupBottomSeenRef.current = false;
+        if (pushupState !== "press") {
+          setPushupState("press");
         }
         return;
+      }
+
+      if (pushupState === "lowering" && !pushupBottomSeenRef.current && elbowAngle > PUSHUP_BOTTOM_ANGLE + 5) {
+        setFeedbackMessage("Bend elbows more to reach full depth before pressing.", { allowRepeat: false });
       }
 
       if (pushupState !== "setup") {
@@ -434,33 +459,41 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
 
       const avgShoulderY = (leftShoulder[1] + rightShoulder[1]) / 2;
       const avgWristY = (leftWrist[1] + rightWrist[1]) / 2;
+      const hangDepth = avgWristY - avgShoulderY;
+
+      if (hangDepth >= PULLUP_BOTTOM_WRIST_OFFSET) {
+        pullupHangSeenRef.current = true;
+        if (pullupState !== 'hang') {
+          setPullupState('hang');
+          setFeedbackMessage('Full hang - engage lats before the next pull.', { immediate: true });
+        }
+        return;
+      }
 
       if (nose[1] <= avgShoulderY + PULLUP_TOP_NOSE_OFFSET) {
-        if (pullupState === "pull") {
-          setRepCount((previous) => {
-            const next = previous + 1;
-            speak(`Rep ${next}`, { immediate: true });
-            return next;
-          });
+        if (pullupState === 'pull') {
+          if (pullupHangSeenRef.current) {
+            setRepCount((previous) => {
+              const next = previous + 1;
+              speak(`Rep ${next}`, { immediate: true });
+              return next;
+            });
+            setFeedbackMessage("Nice pull - own the top before lowering.", { silent: true });
+          } else {
+            setFeedbackMessage("Rep didn't count - hit a full hang before pulling up.", { immediate: true });
+          }
         }
-        if (pullupState !== "top") {
-          setPullupState("top");
-          setFeedbackMessage("Hold the top - squeeze shoulder blades together.", { silent: true });
-        }
-        return;
-      }
-
-      if (avgWristY - avgShoulderY > PULLUP_BOTTOM_WRIST_OFFSET) {
-        if (pullupState !== "hang") {
-          setPullupState("hang");
-          setFeedbackMessage("Full hang - engage lats before the next pull.", { immediate: true });
+        pullupHangSeenRef.current = false;
+        if (pullupState !== 'top') {
+          setPullupState('top');
         }
         return;
       }
 
-      if (pullupState !== "pull") {
-        setPullupState("pull");
-        setFeedbackMessage("Drive elbows down and lead with your chest.");
+      if (pullupState !== 'pull') {
+        setPullupState('pull');
+      } else if (!pullupHangSeenRef.current && hangDepth < PULLUP_BOTTOM_WRIST_OFFSET * 0.6) {
+        setFeedbackMessage("Reset to a full hang so the rep will count.", { allowRepeat: false });
       }
     },
     [pullupState, setFeedbackMessage, speak]
@@ -483,6 +516,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const wristGap = distance(leftWrist, rightWrist);
       const avgShoulderY = (leftShoulder[1] + rightShoulder[1]) / 2;
       const avgWristY = (leftWrist[1] + rightWrist[1]) / 2;
+      const now = Date.now();
 
       const isWide =
         ankleGap > JACK_WIDE_ANKLE_GAP &&
@@ -491,25 +525,41 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const isCenter = ankleGap < JACK_CENTER_ANKLE_GAP && wristGap < JACK_CENTER_WRIST_GAP;
 
       if (isWide) {
-        if (jackState === "center") {
-          setRepCount((previous) => previous + 1);
+        if (jackCenterReadyRef.current) {
+          jackCenterReadyRef.current = false;
+          setRepCount((previous) => {
+            const next = previous + 1;
+            speak(`Rep ${next}`, { immediate: true });
+            return next;
+          });
+          setFeedbackMessage("Great extension - keep the rhythm light on landings.", { silent: true });
         }
         if (jackState !== "wide") {
           setJackState("wide");
-          setFeedbackMessage("Big extension - reach tall overhead and stay light on landings.", { silent: true });
         }
         return;
       }
 
       if (isCenter) {
+        jackCenterReadyRef.current = true;
         if (jackState !== "center") {
           setJackState("center");
-          setFeedbackMessage("Snap back to center with knees softly bent.");
+          setFeedbackMessage("Snap back to center with soft knees.", { silent: true });
         }
         return;
       }
+
+      if (jackState !== "wide" && jackState !== "center") {
+        setJackState("center");
+      }
+
+      const nearlyWide = ankleGap > JACK_CENTER_ANKLE_GAP + 0.06 || wristGap > JACK_CENTER_WRIST_GAP + 0.05;
+      if (jackCenterReadyRef.current && nearlyWide && now - lastJackFeedbackRef.current > 1500) {
+        setFeedbackMessage("Rep didn't count - reach arms higher and step wider.", { immediate: true });
+        lastJackFeedbackRef.current = now;
+      }
     },
-    [jackState, setFeedbackMessage]
+    [jackState, setFeedbackMessage, speak]
   );
 
   const analyzePlank = useCallback(
@@ -519,6 +569,32 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const ankle = getPoint(landmarks, 28);
       if (!shoulder || !hip || !ankle) {
         return;
+      }
+
+      const shoulderHipDeltaY = Math.abs(shoulder[1] - hip[1]);
+      const hipAnkleDeltaY = Math.abs(hip[1] - ankle[1]);
+
+      if (shoulderHipDeltaY > PLANK_MAX_SHOULDER_HIP_DELTA || hipAnkleDeltaY > PLANK_MAX_HIP_ANKLE_DELTA) {
+        plankStandingFramesRef.current = Math.min(plankStandingFramesRef.current + 1, 120);
+        if (plankStandingFramesRef.current >= PLANK_STANDING_GRACE_FRAMES) {
+          if (plankHoldActiveRef.current) {
+            plankHoldActiveRef.current = false;
+            plankLastTimestampRef.current = null;
+            plankHoldMsRef.current = 0;
+            lastPlankBroadcastRef.current = 0;
+            setPlankHoldMs(0);
+            setPlankState("setup");
+            setFeedbackMessage("Timer paused - drop hips to shoulder height before holding.", { immediate: true });
+          } else if (plankState !== "setup") {
+            setPlankState("setup");
+            setFeedbackMessage("Get into a straight plank before the timer starts.", { allowRepeat: false });
+          }
+        }
+        return;
+      }
+
+      if (plankStandingFramesRef.current !== 0) {
+        plankStandingFramesRef.current = 0;
       }
 
       const bodyAngleRaw = angleBetween(shoulder, hip, ankle);
@@ -568,15 +644,16 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
             immediate: plankLowFramesRef.current >= PLANK_STRICT_FRAMES,
           });
         }
-      } else {
-        if (plankState !== "adjust") {
-          setPlankState("adjust");
-        }
-        if (plankLowFramesRef.current >= PLANK_WARN_FRAMES) {
-          setFeedbackMessage("Reset the plank - squeeze glutes and stack ears over shoulders.", {
-            immediate: true,
-          });
-        }
+        return;
+      }
+
+      if (plankState !== "adjust") {
+        setPlankState("adjust");
+      }
+      if (plankLowFramesRef.current >= PLANK_WARN_FRAMES) {
+        setFeedbackMessage("Reset the plank - squeeze glutes and stack ears over shoulders.", {
+          immediate: true,
+        });
       }
 
       if (plankHoldActiveRef.current && plankLowFramesRef.current >= PLANK_STRICT_FRAMES) {
@@ -886,3 +963,9 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     stop,
   };
 }
+
+
+
+
+
+
