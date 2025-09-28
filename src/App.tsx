@@ -11,6 +11,8 @@ import { Volume2 } from "lucide-react";
 import plankDemo from "./assets/Alien_Plank_Exercise_Animation_Generated.mp4";
 import squatDemo from "./assets/Cartoon_Squat_Animation_Generation.mp4";
 import pushupDemo from "./assets/Alien_Push_Up_Animation_Generated.mp4";
+import pullupDemo from "./assets/Alien_Pull_Up_Animation_Generation.mp4";
+import jumpingjackDemo from "./assets/alien-jumpingjack.mp4";
 import alienLogo from "./assets/gemini-logo.png";
 import { ReactTyped } from "react-typed";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -129,8 +131,8 @@ const DEMO_VIDEOS: Record<ExerciseMode, string> = {
   squat: squatDemo,
   plank: plankDemo,
   pushup: pushupDemo,
-  pullup: "https://assets.mixkit.co/videos/preview/mixkit-athlete-doing-pullups-in-a-gym-4817-large.mp4",
-  jumpingJack: "https://assets.mixkit.co/videos/preview/mixkit-fitness-woman-doing-jumping-jacks-4291-large.mp4",
+  pullup: pullupDemo,
+  jumpingJack: jumpingjackDemo,
 };
 
 const EXERCISE_CONFIG = MODE_OPTIONS.reduce(
