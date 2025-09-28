@@ -293,7 +293,7 @@ export default function App() {
 
   return (
     <div className="app-background">
-      <div className="app-ribbon">owl hawks 2025</div>
+      <div className="app-ribbon">owl hacks 2025</div>
       <div className="app-frame">
         <header className="app-header">
           <div className="brand">
