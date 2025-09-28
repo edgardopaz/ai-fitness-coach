@@ -50,11 +50,20 @@ const PUSHUP_BOTTOM_ANGLE = 110;
 const PULLUP_TOP_NOSE_OFFSET = 0.04;
 const PULLUP_BOTTOM_WRIST_OFFSET = 0.14;
 
-const JACK_WIDE_ANKLE_GAP = 0.45;
-const JACK_WIDE_WRIST_GAP = 0.3;
-const JACK_CENTER_ANKLE_GAP = 0.32;
-const JACK_CENTER_WRIST_GAP = 0.24;
-
+const JACK_DEFAULT_NEUTRAL_LEG_RATIO = 0.75;
+const JACK_DEFAULT_NEUTRAL_WRIST_RATIO = 0.85;
+const JACK_MIN_NEUTRAL_ANKLE_GAP = 0.08;
+const JACK_MIN_NEUTRAL_WRIST_GAP = 0.18;
+const JACK_WIDE_LEG_EXTRA = 0.12;
+const JACK_WIDE_LEG_RATIO = 0.55;
+const JACK_CENTER_LEG_EXTRA = 0.045;
+const JACK_CENTER_LEG_RATIO = 0.25;
+const JACK_ARM_OVERHEAD_DELTA = 0.05;
+const JACK_ARM_DOWN_DELTA = -0.045;
+const JACK_ALMOST_ARM_RATIO = 0.6;
+const JACK_ALMOST_LEG_RATIO = 0.7;
+const JACK_CENTER_RETURN_RATIO = 1.35;
+const JACK_FEEDBACK_COOLDOWN_MS = 1200;
 const VISION_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm";
 const POSE_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
@@ -154,6 +163,9 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
   const pullupHangSeenRef = useRef(false);
   const jackCenterReadyRef = useRef(true);
   const lastJackFeedbackRef = useRef(0);
+  const jackNeutralAnkleGapRef = useRef<number | null>(null);
+  const jackNeutralWristGapRef = useRef<number | null>(null);
+  const jackDebugCounterRef = useRef(0);
   const plankStandingFramesRef = useRef(0);
   const plankHoldMsRef = useRef(0);
   const plankLastTimestampRef = useRef<number | null>(null);
@@ -233,7 +245,10 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     pushupBottomSeenRef.current = false;
     pullupHangSeenRef.current = false;
     jackCenterReadyRef.current = true;
+    jackNeutralAnkleGapRef.current = null;
+    jackNeutralWristGapRef.current = null;
     lastJackFeedbackRef.current = 0;
+    jackDebugCounterRef.current = 0;
     plankStandingFramesRef.current = 0;
 
     setRepCount(0);
@@ -507,6 +522,8 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const rightWrist = getPoint(landmarks, 16);
       const leftShoulder = getPoint(landmarks, 11);
       const rightShoulder = getPoint(landmarks, 12);
+      const leftHip = getPoint(landmarks, 23);
+      const rightHip = getPoint(landmarks, 24);
 
       if (!leftAnkle || !rightAnkle || !leftWrist || !rightWrist || !leftShoulder || !rightShoulder) {
         return;
@@ -516,52 +533,167 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const wristGap = distance(leftWrist, rightWrist);
       const avgShoulderY = (leftShoulder[1] + rightShoulder[1]) / 2;
       const avgWristY = (leftWrist[1] + rightWrist[1]) / 2;
+
+      const shoulderWidthX = Math.max(Math.abs(leftShoulder[0] - rightShoulder[0]), 0.001);
+      const hipWidthX =
+        leftHip && rightHip ? Math.max(Math.abs(leftHip[0] - rightHip[0]), 0.001) : shoulderWidthX;
+
+      const neutralLegBaseline =
+        jackNeutralAnkleGapRef.current ??
+        Math.max(JACK_MIN_NEUTRAL_ANKLE_GAP, hipWidthX * JACK_DEFAULT_NEUTRAL_LEG_RATIO);
+      const neutralWristBaseline =
+        jackNeutralWristGapRef.current ??
+        Math.max(JACK_MIN_NEUTRAL_WRIST_GAP, shoulderWidthX * JACK_DEFAULT_NEUTRAL_WRIST_RATIO);
+
+      const legWideThreshold = Math.max(
+        neutralLegBaseline + JACK_WIDE_LEG_EXTRA,
+        neutralLegBaseline + hipWidthX * JACK_WIDE_LEG_RATIO
+      );
+      const legCenterThreshold = Math.min(
+        neutralLegBaseline + JACK_CENTER_LEG_EXTRA,
+        neutralLegBaseline + hipWidthX * JACK_CENTER_LEG_RATIO
+      );
+
+      const leftArmDelta = leftShoulder[1] - leftWrist[1];
+      const rightArmDelta = rightShoulder[1] - rightWrist[1];
+
+      const armsOverhead =
+        leftArmDelta >= JACK_ARM_OVERHEAD_DELTA && rightArmDelta >= JACK_ARM_OVERHEAD_DELTA;
+      const armsDown =
+        leftArmDelta <= JACK_ARM_DOWN_DELTA && rightArmDelta <= JACK_ARM_DOWN_DELTA;
+      const armsAlmostOverhead =
+        leftArmDelta >= JACK_ARM_OVERHEAD_DELTA * JACK_ALMOST_ARM_RATIO &&
+        rightArmDelta >= JACK_ARM_OVERHEAD_DELTA * JACK_ALMOST_ARM_RATIO;
+      const armsAlmostDown =
+        leftArmDelta <= JACK_ARM_DOWN_DELTA * JACK_ALMOST_ARM_RATIO &&
+        rightArmDelta <= JACK_ARM_DOWN_DELTA * JACK_ALMOST_ARM_RATIO;
+
+      const legsWideEnough = ankleGap >= legWideThreshold;
+      const legsAlmostWide = ankleGap >= legWideThreshold * JACK_ALMOST_LEG_RATIO;
+      const legsTogetherEnough = ankleGap <= legCenterThreshold;
+      const legsAlmostTogether = ankleGap <= legCenterThreshold * JACK_CENTER_RETURN_RATIO;
+      const wristsAtSides = wristGap <= neutralWristBaseline * 1.2;
+
       const now = Date.now();
+      const timeSinceFeedback = now - lastJackFeedbackRef.current;
+      const canGiveFeedback = timeSinceFeedback > JACK_FEEDBACK_COOLDOWN_MS;
 
-      const isWide =
-        ankleGap > JACK_WIDE_ANKLE_GAP &&
-        wristGap > JACK_WIDE_WRIST_GAP &&
-        avgWristY < avgShoulderY;
-      const isCenter = ankleGap < JACK_CENTER_ANKLE_GAP && wristGap < JACK_CENTER_WRIST_GAP;
+      if (armsOverhead && legsWideEnough) {
+        const wasReady = jackCenterReadyRef.current;
+        const hasNeutralBaseline = jackNeutralAnkleGapRef.current !== null;
 
-      if (isWide) {
-        if (jackCenterReadyRef.current) {
-          jackCenterReadyRef.current = false;
+        if (wasReady && hasNeutralBaseline) {
           setRepCount((previous) => {
             const next = previous + 1;
             speak(`Rep ${next}`, { immediate: true });
             return next;
           });
-          setFeedbackMessage("Great extension - keep the rhythm light on landings.", { silent: true });
+          setFeedbackMessage("Rep counted - stay tall and control the landing.", { silent: true });
+        } else if (wasReady && !hasNeutralBaseline && canGiveFeedback) {
+          setFeedbackMessage("Start neutral so reps count - feet together, arms down.", { immediate: true });
+          lastJackFeedbackRef.current = now;
+        } else if (!wasReady && canGiveFeedback) {
+          setFeedbackMessage("Finish the reset before starting the next rep.", { immediate: true });
+          lastJackFeedbackRef.current = now;
         }
+
+        jackCenterReadyRef.current = false;
+
         if (jackState !== "wide") {
           setJackState("wide");
         }
+
+        lastJackFeedbackRef.current = now;
         return;
       }
 
-      if (isCenter) {
+      if (armsDown && legsTogetherEnough && wristsAtSides) {
         jackCenterReadyRef.current = true;
+        jackNeutralAnkleGapRef.current =
+          jackNeutralAnkleGapRef.current === null
+            ? ankleGap
+            : jackNeutralAnkleGapRef.current * 0.65 + ankleGap * 0.35;
+        jackNeutralWristGapRef.current =
+          jackNeutralWristGapRef.current === null
+            ? wristGap
+            : jackNeutralWristGapRef.current * 0.65 + wristGap * 0.35;
+
         if (jackState !== "center") {
           setJackState("center");
-          setFeedbackMessage("Snap back to center with soft knees.", { silent: true });
         }
+
+        lastJackFeedbackRef.current = now;
         return;
       }
 
-      if (jackState !== "wide" && jackState !== "center") {
-        setJackState("center");
+      if (canGiveFeedback) {
+        if (jackCenterReadyRef.current && (legsAlmostWide || armsAlmostOverhead)) {
+          if (!armsOverhead && legsWideEnough) {
+            setFeedbackMessage("Arms not overhead - reach all the way up.", { immediate: true });
+            lastJackFeedbackRef.current = now;
+          } else if (armsOverhead && !legsWideEnough) {
+            setFeedbackMessage("Feet not wide enough - jump out farther.", { immediate: true });
+            lastJackFeedbackRef.current = now;
+          } else if (!armsOverhead && !legsWideEnough) {
+            setFeedbackMessage("Go bigger - reach overhead and jump feet wider.", { immediate: true });
+            lastJackFeedbackRef.current = now;
+          }
+        } else if (!jackCenterReadyRef.current && jackState === "wide" && (legsAlmostTogether || armsAlmostDown)) {
+          if (!legsTogetherEnough && legsAlmostTogether) {
+            setFeedbackMessage("Bring your feet together to finish the rep.", { immediate: true });
+            lastJackFeedbackRef.current = now;
+          } else if (!armsDown && armsAlmostDown) {
+            setFeedbackMessage("Lower your arms to your sides before the next rep.", { immediate: true });
+            lastJackFeedbackRef.current = now;
+          } else if (!wristsAtSides && armsAlmostDown) {
+            setFeedbackMessage("Keep arms close to your sides at the bottom.", { immediate: true });
+            lastJackFeedbackRef.current = now;
+          }
+        }
       }
 
-      const nearlyWide = ankleGap > JACK_CENTER_ANKLE_GAP + 0.06 || wristGap > JACK_CENTER_WRIST_GAP + 0.05;
-      if (jackCenterReadyRef.current && nearlyWide && now - lastJackFeedbackRef.current > 1500) {
-        setFeedbackMessage("Rep didn't count - reach arms higher and step wider.", { immediate: true });
-        lastJackFeedbackRef.current = now;
+      if (import.meta.env.DEV) {
+        jackDebugCounterRef.current = (jackDebugCounterRef.current + 1) % 10;
+        if (jackDebugCounterRef.current === 0) {
+          console.debug("[JumpingJack]", {
+            leftAnkle,
+            rightAnkle,
+            leftWrist,
+            rightWrist,
+            leftShoulder,
+            rightShoulder,
+            leftHip,
+            rightHip,
+            ankleGap,
+            wristGap,
+            avgShoulderY,
+            avgWristY,
+            shoulderWidthX,
+            hipWidthX,
+            neutralLegBaseline,
+            neutralWristBaseline,
+            legWideThreshold,
+            legCenterThreshold,
+            leftArmDelta,
+            rightArmDelta,
+            armsOverhead,
+            armsDown,
+            armsAlmostOverhead,
+            armsAlmostDown,
+            legsWideEnough,
+            legsAlmostWide,
+            legsTogetherEnough,
+            legsAlmostTogether,
+            wristsAtSides,
+            jackCenterReady: jackCenterReadyRef.current,
+            jackState,
+            timeSinceFeedback,
+          });
+        }
       }
     },
     [jackState, setFeedbackMessage, speak]
   );
-
   const analyzePlank = useCallback(
     (landmarks: LandmarkList, timestamp: number) => {
       const shoulder = getPoint(landmarks, 12);
@@ -963,6 +1095,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     stop,
   };
 }
+
 
 
 
