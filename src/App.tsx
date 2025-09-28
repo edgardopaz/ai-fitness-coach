@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import "./App.css";
 import { Volume2 } from "lucide-react";
 import plankDemo from "./assets/Alien_Plank_Exercise_Animation_Generated.mp4";
@@ -117,9 +117,15 @@ const EXERCISE_CONFIG = MODE_OPTIONS.reduce(
   {} as Record<ExerciseMode, ExerciseConfig>
 );
 
-const SUPPORTED_POSE_MODES: readonly SupportedMode[] = ["squat", "plank"];
+const SUPPORTED_POSE_MODES: readonly SupportedMode[] = [
+  "squat",
+  "plank",
+  "pushup",
+  "pullup",
+  "jumpingJack",
+];
 const isSupportedPoseMode = (mode: ExerciseMode): mode is SupportedMode =>
-  (SUPPORTED_POSE_MODES as readonly ExerciseMode[]).includes(mode as SupportedMode);
+  (SUPPORTED_POSE_MODES as readonly ExerciseMode[]).includes(mode);
 
 async function fetchExerciseLines(mode: ExerciseMode): Promise<string[]> {
   const fallback = [
@@ -172,10 +178,8 @@ export default function App() {
   const [mode, setMode] = useState<ExerciseMode>("squat");
   const [isDemoPlaying, setIsDemoPlaying] = useState(false);
   const [demoKey, setDemoKey] = useState(0);
-  const [plankHoldMs, setPlankHoldMs] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const plankTimerRef = useRef<number | null>(null);
 
   const supportedMode = isSupportedPoseMode(mode) ? mode : null;
 
@@ -185,6 +189,7 @@ export default function App() {
     isStarted,
     isVideoReady,
     repCount,
+    plankHoldMs,
     feedback: coachFeedback,
     stateLabel,
     appError,
@@ -209,9 +214,7 @@ export default function App() {
   const metricValue = isDemoPlaying
     ? "--"
     : mode === "plank"
-    ? isModeSupported && isStarted
-      ? formatHoldTime(plankHoldMs)
-      : "0.0s"
+    ? formatHoldTime(plankHoldMs)
     : String(repCount);
   const stateDisplay = isDemoPlaying ? "DEMO" : isModeSupported ? stateLabel : "N/A";
   const sessionStatus = !isModeSupported
@@ -274,37 +277,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (mode !== "plank" || !isModeSupported) {
-      plankTimerRef.current = null;
-      setPlankHoldMs(0);
-      return;
-    }
-
-    if (!isStarted || isDemoPlaying) {
-      plankTimerRef.current = null;
-      if (!isStarted) {
-        setPlankHoldMs(0);
-      }
-      return;
-    }
-
-    let frame = 0;
-    const update = (time: number) => {
-      if (plankTimerRef.current === null) {
-        plankTimerRef.current = time;
-      }
-      setPlankHoldMs(time - plankTimerRef.current);
-      frame = requestAnimationFrame(update);
-    };
-
-    frame = requestAnimationFrame(update);
-    return () => {
-      cancelAnimationFrame(frame);
-      plankTimerRef.current = null;
-    };
-  }, [mode, isModeSupported, isStarted, isDemoPlaying]);
-
-  useEffect(() => {
     let alive = true;
     (async () => {
       try {
@@ -321,7 +293,7 @@ export default function App() {
 
   return (
     <div className="app-background">
-      <div className="app-ribbon">owl hacks 2025</div>
+      <div className="app-ribbon">owl hawks 2025</div>
       <div className="app-frame">
         <header className="app-header">
           <div className="brand">
