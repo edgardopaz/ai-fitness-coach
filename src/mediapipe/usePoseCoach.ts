@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import {
   DrawingUtils,
   FilesetResolver,
@@ -50,19 +50,19 @@ const PUSHUP_BOTTOM_ANGLE = 110;
 const PULLUP_TOP_NOSE_OFFSET = 0.04;
 const PULLUP_BOTTOM_WRIST_OFFSET = 0.14;
 
-const JACK_DEFAULT_NEUTRAL_LEG_RATIO = 0.75;
-const JACK_DEFAULT_NEUTRAL_WRIST_RATIO = 0.85;
+const JACK_DEFAULT_NEUTRAL_LEG_RATIO = 0.68;
+const JACK_DEFAULT_NEUTRAL_WRIST_RATIO = 0.82;
 const JACK_MIN_NEUTRAL_ANKLE_GAP = 0.08;
 const JACK_MIN_NEUTRAL_WRIST_GAP = 0.18;
-const JACK_WIDE_LEG_EXTRA = 0.12;
-const JACK_WIDE_LEG_RATIO = 0.55;
-const JACK_CENTER_LEG_EXTRA = 0.045;
+const JACK_WIDE_LEG_EXTRA = 0.09;
+const JACK_WIDE_LEG_RATIO = 0.45;
+const JACK_CENTER_LEG_EXTRA = 0.05;
 const JACK_CENTER_LEG_RATIO = 0.25;
-const JACK_ARM_OVERHEAD_DELTA = 0.05;
-const JACK_ARM_DOWN_DELTA = -0.045;
-const JACK_ALMOST_ARM_RATIO = 0.6;
-const JACK_ALMOST_LEG_RATIO = 0.7;
-const JACK_CENTER_RETURN_RATIO = 1.35;
+const JACK_ARM_OVERHEAD_DELTA = 0.04;
+const JACK_ARM_DOWN_DELTA = -0.035;
+const JACK_ALMOST_ARM_RATIO = 0.8;
+const JACK_ALMOST_LEG_RATIO = 0.85;
+const JACK_CENTER_RETURN_RATIO = 1.25;
 const JACK_FEEDBACK_COOLDOWN_MS = 1200;
 const VISION_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm";
 const POSE_MODEL_URL =
@@ -578,7 +578,14 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const timeSinceFeedback = now - lastJackFeedbackRef.current;
       const canGiveFeedback = timeSinceFeedback > JACK_FEEDBACK_COOLDOWN_MS;
 
-      if (armsOverhead && legsWideEnough) {
+      const widePoseStrong = armsOverhead && legsWideEnough;
+      const widePoseBorderline =
+        !widePoseStrong &&
+        ((armsOverhead && legsAlmostWide) ||
+          (armsAlmostOverhead && legsWideEnough) ||
+          (armsAlmostOverhead && legsAlmostWide));
+
+      if (widePoseStrong || widePoseBorderline) {
         const wasReady = jackCenterReadyRef.current;
         const hasNeutralBaseline = jackNeutralAnkleGapRef.current !== null;
 
@@ -588,13 +595,24 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
             speak(`Rep ${next}`, { immediate: true });
             return next;
           });
-          setFeedbackMessage("Rep counted - stay tall and control the landing.", { silent: true });
+
+          if (widePoseBorderline && canGiveFeedback) {
+            const borderlineMessage =
+              !armsOverhead && !legsWideEnough
+                ? "Rep counted - reach higher and step wider for cleaner reps."
+                : !armsOverhead
+                ? "Rep counted - try raising arms a little higher."
+                : !legsWideEnough
+                ? "Rep counted - jump feet a little wider."
+                : "Rep counted - keep the motion smooth.";
+            setFeedbackMessage(borderlineMessage, { allowRepeat: false });
+          } else {
+            setFeedbackMessage("Rep counted - stay tall and control the landing.", { silent: true });
+          }
         } else if (wasReady && !hasNeutralBaseline && canGiveFeedback) {
           setFeedbackMessage("Start neutral so reps count - feet together, arms down.", { immediate: true });
-          lastJackFeedbackRef.current = now;
         } else if (!wasReady && canGiveFeedback) {
           setFeedbackMessage("Finish the reset before starting the next rep.", { immediate: true });
-          lastJackFeedbackRef.current = now;
         }
 
         jackCenterReadyRef.current = false;
@@ -1095,10 +1113,4 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     stop,
   };
 }
-
-
-
-
-
-
 
