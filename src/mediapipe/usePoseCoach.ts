@@ -24,6 +24,18 @@ const VISION_WASM_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.
 const POSE_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 
+const STANDING_ANGLE_RELAXATION = 3;
+const BOTTOM_ANGLE_RELAXATION = 5;
+const REP_DEPTH_MARGIN = 0.9;
+const HIP_BELOW_THRESHOLD_MARGIN = 0.8;
+const MIN_BOTTOM_HOLD_FRAMES = 2;
+const MIN_STANDING_HOLD_FRAMES = 2;
+const SMOOTHING_ALPHA_HIPS = 0.25;
+const SMOOTHING_ALPHA_KNEE = 0.35;
+const SMOOTHING_ALPHA_PLANK = 0.25;
+const PLANK_WARN_FRAMES = 6;
+const PLANK_STRICT_FRAMES = 12;
+
 type SquatPhase = "start" | "up" | "down";
 type LandmarkList = ReadonlyArray<NormalizedLandmark>;
 type Point2D = readonly [number, number];
@@ -75,6 +87,18 @@ const angleBetween = (a: Point2D, b: Point2D, c: Point2D) => {
   return degrees;
 };
 
+const smoothValue = (ref: { current: number | null }, value: number | null, alpha: number) => {
+  if (value === null || Number.isNaN(value)) {
+    return null;
+  }
+  if (ref.current === null || Number.isNaN(ref.current)) {
+    ref.current = value;
+  } else {
+    ref.current = ref.current + alpha * (value - ref.current);
+  }
+  return ref.current;
+};
+
 const isSupportedMode = (mode: SupportedMode | null): mode is SupportedMode => {
   return mode != null && SUPPORTED_MODES.includes(mode);
 };
@@ -86,6 +110,13 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
   const standingHipRef = useRef<number | null>(null);
   const bottomHipRef = useRef<number | null>(null);
   const standingHipWidthRef = useRef<number | null>(null);
+  const smoothedHipYRef = useRef<number | null>(null);
+  const smoothedKneeYRef = useRef<number | null>(null);
+  const smoothedKneeAngleRef = useRef<number | null>(null);
+  const standingHoldFramesRef = useRef(0);
+  const bottomHoldFramesRef = useRef(0);
+  const plankAngleRef = useRef<number | null>(null);
+  const plankLowFramesRef = useRef(0);
 
   const [isModelReady, setIsModelReady] = useState(false);
   const [isStarted, setIsStarted] = useState(false);
@@ -137,6 +168,19 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     [speak]
   );
 
+  const clearPoseRefs = useCallback(() => {
+    standingHipRef.current = null;
+    bottomHipRef.current = null;
+    standingHipWidthRef.current = null;
+    smoothedHipYRef.current = null;
+    smoothedKneeYRef.current = null;
+    smoothedKneeAngleRef.current = null;
+    standingHoldFramesRef.current = 0;
+    bottomHoldFramesRef.current = 0;
+    plankAngleRef.current = null;
+    plankLowFramesRef.current = 0;
+  }, []);
+
   const analyzeSquat = useCallback(
     (landmarks: LandmarkList) => {
       const rightHip = getPoint(landmarks, 24);
@@ -160,7 +204,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const rightAngle = computeKneeAngle(rightHip, rightKnee, rightAnkle);
       const leftAngle = computeKneeAngle(leftHip, leftKnee, leftAnkle);
       const kneeAngles = [rightAngle, leftAngle].filter((value): value is number => typeof value === "number");
-      const kneeAngle =
+      const rawKneeAngle =
         kneeAngles.length > 0 ? kneeAngles.reduce((sum, value) => sum + value, 0) / kneeAngles.length : null;
 
       const hipYValues = [rightHip, leftHip].filter(Boolean).map((point) => point![1]);
@@ -172,70 +216,102 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
 
       const avgHipY = hipYValues.reduce((sum, value) => sum + value, 0) / hipYValues.length;
       const avgKneeY = kneeYValues.reduce((sum, value) => sum + value, 0) / kneeYValues.length;
-      const hipVerticalDiff = avgHipY - avgKneeY;
+
+      const hipY = smoothValue(smoothedHipYRef, avgHipY, SMOOTHING_ALPHA_HIPS) ?? avgHipY;
+      const kneeY = smoothValue(smoothedKneeYRef, avgKneeY, SMOOTHING_ALPHA_HIPS) ?? avgKneeY;
+      const kneeAngle =
+        rawKneeAngle !== null
+          ? smoothValue(smoothedKneeAngleRef, rawKneeAngle, SMOOTHING_ALPHA_KNEE) ?? rawKneeAngle
+          : null;
+      const effectiveKneeAngle = kneeAngle ?? rawKneeAngle;
+
+      const hipVerticalDiff = hipY - kneeY;
       const hipWidth = rightHip && leftHip ? Math.abs(rightHip[0] - leftHip[0]) : null;
       const kneeWidth = rightKnee && leftKnee ? Math.abs(rightKnee[0] - leftKnee[0]) : null;
       const baseHipWidth = standingHipWidthRef.current ?? hipWidth;
       const kneeWidthRatio =
         baseHipWidth && baseHipWidth > 0 && kneeWidth !== null ? kneeWidth / baseHipWidth : null;
-      const kneesWideEnough = kneeWidthRatio !== null && kneeWidthRatio >= MIN_KNEE_WIDTH_RATIO;
+      const kneesWideEnough = kneeWidthRatio !== null && kneeWidthRatio >= MIN_KNEE_WIDTH_RATIO * 0.9;
       const kneesWideBottom =
-        kneesWideEnough && kneeAngle !== null && kneeAngle <= FRONT_KNEE_ANGLE_MAX;
+        kneesWideEnough && effectiveKneeAngle !== null && effectiveKneeAngle <= FRONT_KNEE_ANGLE_MAX + 4;
 
       if (standingHipRef.current === null) {
-        standingHipRef.current = avgHipY;
-        if (hipWidth !== null && hipWidth > 0 && standingHipWidthRef.current === null) {
-          standingHipWidthRef.current = hipWidth;
-        }
+        standingHipRef.current = hipY;
+      }
+      if (standingHipWidthRef.current === null && hipWidth !== null && hipWidth > 0) {
+        standingHipWidthRef.current = hipWidth;
       }
 
-      const depthFromTop = standingHipRef.current !== null ? avgHipY - standingHipRef.current : 0;
-
-      const kneeAngleIndicatesStanding = kneeAngle !== null && kneeAngle >= STANDING_KNEE_ANGLE;
+      const depthFromTop = standingHipRef.current !== null ? hipY - standingHipRef.current : 0;
+      const kneeAngleIndicatesStanding =
+        effectiveKneeAngle !== null && effectiveKneeAngle >= STANDING_KNEE_ANGLE - STANDING_ANGLE_RELAXATION;
       const hipReturn =
-        Math.abs(depthFromTop) <= Math.max(HIP_RETURN_TOLERANCE, MIN_HIP_DELTA_FOR_REP * 0.35);
+        Math.abs(depthFromTop) <= Math.max(HIP_RETURN_TOLERANCE * 1.5, MIN_HIP_DELTA_FOR_REP * 0.35);
       const hipPositionIndicatesStanding = hipReturn || hipVerticalDiff <= 0;
       const isStanding = kneeAngleIndicatesStanding && hipPositionIndicatesStanding;
 
-      const kneeAngleIndicatesBottom = kneeAngle !== null && kneeAngle <= BOTTOM_KNEE_ANGLE;
-      const depthSufficient = depthFromTop >= MIN_HIP_DELTA_FOR_REP;
-      const hipBelowKneeStrong = hipVerticalDiff >= HIP_BELOW_KNEE_THRESHOLD;
+      const kneeAngleIndicatesBottom =
+        effectiveKneeAngle !== null && effectiveKneeAngle <= BOTTOM_KNEE_ANGLE + BOTTOM_ANGLE_RELAXATION;
+      const repDepthThreshold = MIN_HIP_DELTA_FOR_REP * REP_DEPTH_MARGIN;
+      const depthSufficient = depthFromTop >= repDepthThreshold;
+      const hipBelowKneeStrong = hipVerticalDiff >= HIP_BELOW_KNEE_THRESHOLD * HIP_BELOW_THRESHOLD_MARGIN;
       const bottomDetected = depthSufficient && (kneeAngleIndicatesBottom || hipBelowKneeStrong || kneesWideBottom);
 
       if (isStanding) {
-        if (
-          squatState === "down" &&
-          bottomHipRef.current !== null &&
-          standingHipRef.current !== null &&
-          bottomHipRef.current - standingHipRef.current >= MIN_HIP_DELTA_FOR_REP
-        ) {
-          setRepCount((previous) => {
-            const next = previous + 1;
-            speak(`Rep ${next}`, { immediate: true });
-            return next;
-          });
-          setFeedbackMessage("Stand tall and lock the rep before the next drive.");
-        } else {
-          setFeedbackMessage("Brace, set your stance, and control the next descent.");
+        standingHoldFramesRef.current = Math.min(standingHoldFramesRef.current + 1, 60);
+        bottomHoldFramesRef.current = 0;
+
+        if (standingHoldFramesRef.current >= MIN_STANDING_HOLD_FRAMES) {
+          if (
+            squatState === "down" &&
+            bottomHipRef.current !== null &&
+            standingHipRef.current !== null &&
+            bottomHipRef.current - standingHipRef.current >= repDepthThreshold
+          ) {
+            setRepCount((previous) => {
+              const next = previous + 1;
+              speak(`Rep ${next}`, { immediate: true });
+              return next;
+            });
+            setFeedbackMessage("Stand tall and lock the rep before the next drive.", { silent: true });
+          } else if (squatState !== "up") {
+            setFeedbackMessage("Brace, set your stance, and control the next descent.", { silent: true });
+          }
+
+          if (hipWidth !== null && hipWidth > 0) {
+            standingHipWidthRef.current =
+              standingHipWidthRef.current === null
+                ? hipWidth
+                : Math.min(standingHipWidthRef.current, hipWidth);
+          }
+
+          standingHipRef.current = standingHipRef.current === null ? hipY : Math.min(standingHipRef.current, hipY);
+          bottomHipRef.current = null;
+          setSquatState("up");
         }
-        setSquatState("up");
-        bottomHipRef.current = null;
+
         return;
       }
 
+      standingHoldFramesRef.current = 0;
+
       if (bottomDetected) {
-        if (squatState !== "down") {
-          setSquatState("down");
-          bottomHipRef.current = avgHipY;
-          if (hipVerticalDiff < HIP_BELOW_KNEE_THRESHOLD) {
-            setFeedbackMessage("Drop another inch so hips finish just below the knees.", {
-              immediate: true,
-            });
-          } else {
-            setFeedbackMessage("Great depth. Stay tight and drive up through your heels.", {
-              immediate: true,
-            });
-          }
+        bottomHoldFramesRef.current = Math.min(bottomHoldFramesRef.current + 1, 60);
+      } else if (bottomHoldFramesRef.current > 0) {
+        bottomHoldFramesRef.current -= 1;
+      }
+
+      if (bottomDetected && bottomHoldFramesRef.current >= MIN_BOTTOM_HOLD_FRAMES && squatState === "up") {
+        bottomHipRef.current = hipY;
+        setSquatState("down");
+        if (!hipBelowKneeStrong) {
+          setFeedbackMessage("Drop another inch so hips finish just below the knees.", {
+            immediate: true,
+          });
+        } else {
+          setFeedbackMessage("Great depth. Stay tight and drive up through your heels.", {
+            immediate: true,
+          });
         }
         return;
       }
@@ -258,12 +334,34 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
         return;
       }
 
-      const bodyAngle = angleBetween(shoulder, hip, ankle);
-      if (bodyAngle < 165) {
-        setFeedbackMessage("Lock in a straight line from ears to heels.", { immediate: true });
-      } else {
-        setFeedbackMessage("Strong plank - stay long through your spine and keep breathing.");
+      const bodyAngleRaw = angleBetween(shoulder, hip, ankle);
+      const bodyAngle = smoothValue(plankAngleRef, bodyAngleRaw, SMOOTHING_ALPHA_PLANK) ?? bodyAngleRaw;
+
+      if (bodyAngle < 158) {
+        plankLowFramesRef.current = Math.min(plankLowFramesRef.current + 1, 120);
+        if (plankLowFramesRef.current >= PLANK_WARN_FRAMES) {
+          setFeedbackMessage("Press the floor away and lift hips in line with shoulders.", {
+            immediate: plankLowFramesRef.current >= PLANK_STRICT_FRAMES,
+          });
+        }
+        return;
       }
+
+      if (bodyAngle < 165) {
+        plankLowFramesRef.current = Math.min(plankLowFramesRef.current + 1, 120);
+        if (plankLowFramesRef.current >= PLANK_STRICT_FRAMES) {
+          setFeedbackMessage("Lock in a straight line from ears to heels.", { immediate: true });
+        }
+        return;
+      }
+
+      if (plankLowFramesRef.current !== 0) {
+        plankLowFramesRef.current = 0;
+      }
+
+      setFeedbackMessage("Strong plank - stay long through your spine and keep breathing.", {
+        silent: true,
+      });
     },
     [setFeedbackMessage]
   );
@@ -325,11 +423,6 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       videoElement.pause();
     }
 
-    lastVideoTimeRef.current = -1;
-    standingHipRef.current = null;
-    bottomHipRef.current = null;
-    standingHipWidthRef.current = null;
-
     if (canvasElement) {
       const context = canvasElement.getContext("2d");
       if (context) {
@@ -337,10 +430,16 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       }
     }
 
+    lastVideoTimeRef.current = -1;
+    clearPoseRefs();
     setIsStarted(false);
     setIsVideoReady(false);
-    setFeedbackMessage("Session paused. Hit start when you want the coach back in.");
-  }, [canvasRef, videoRef, setFeedbackMessage]);
+    setRepCount(0);
+    setSquatState("start");
+    setFeedbackMessage("Session paused. Hit start when you want the coach back in.", {
+      silent: true,
+    });
+  }, [canvasRef, videoRef, clearPoseRefs, setFeedbackMessage]);
 
   const start = useCallback(async () => {
     if (!isSupportedMode(mode)) {
@@ -363,6 +462,9 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
 
     try {
       setAppError(null);
+      clearPoseRefs();
+      setRepCount(0);
+      setSquatState("start");
       setFeedbackMessage("Setting up your camera...");
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -403,40 +505,37 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
         stopMediaStream(videoElement.srcObject as MediaStream | null);
         videoElement.srcObject = null;
       }
+      clearPoseRefs();
+      setRepCount(0);
+      setSquatState("start");
       setFeedbackMessage("Camera unavailable. Check permissions and try again.");
     }
-  }, [mode, setFeedbackMessage, videoRef, stop]);
+  }, [mode, setFeedbackMessage, videoRef, clearPoseRefs, stop]);
 
   useEffect(() => {
     if (!isSupportedMode(mode)) {
       if (isStarted) {
         stop();
       }
+      clearPoseRefs();
       setRepCount(0);
       setSquatState("start");
-      standingHipRef.current = null;
-      bottomHipRef.current = null;
-      standingHipWidthRef.current = null;
-      setFeedback("MediaPipe tracking is available for squat and plank labs.");
+      setFeedback("MediaPipe tracking is available for the squat and plank labs.");
       setAppError(null);
       return;
     }
 
-    setRepCount(0);
-    setSquatState("start");
-    standingHipRef.current = null;
-    bottomHipRef.current = null;
-    standingHipWidthRef.current = null;
-    setAppError(null);
-
     if (!isStarted) {
+      clearPoseRefs();
+      setRepCount(0);
+      setSquatState("start");
       setFeedback(
         mode === "squat"
           ? "Coach ready: brace tall, knees track over toes, and sit back confidently."
           : "Coach ready: press the floor away, lengthen through the crown, and lock the core."
       );
     }
-  }, [isStarted, mode, stop]);
+  }, [isStarted, mode, stop, clearPoseRefs]);
 
   useEffect(() => {
     if (!isStarted || !isVideoReady || !isSupportedMode(mode)) {
