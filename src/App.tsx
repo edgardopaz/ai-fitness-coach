@@ -1,11 +1,4 @@
-import { useEffect, useRef, useState, useCallback, type ChangeEvent } from "react";
-import * as tf from "@tensorflow/tfjs";
-import "@tensorflow/tfjs-backend-webgl";
-import {
-  PoseLandmarker,
-  FilesetResolver,
-  DrawingUtils,
-} from "@mediapipe/tasks-vision";
+﻿import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import "./App.css";
 import { Volume2 } from "lucide-react";
 import plankDemo from "./assets/Alien_Plank_Exercise_Animation_Generated.mp4";
@@ -16,16 +9,12 @@ import jumpingjackDemo from "./assets/alien-jumpingjack.mp4";
 import alienLogo from "./assets/gemini-logo.png";
 import { ReactTyped } from "react-typed";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { usePoseCoach, type SupportedMode } from "./mediapipe/usePoseCoach";
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
 const genAI = API_KEY ? new GoogleGenerativeAI(API_KEY) : null;
 
-
 type ExerciseMode = "squat" | "plank" | "pushup" | "pullup" | "jumpingJack";
-type SquatPhase = "start" | "up" | "down";
-type PushupPhase = "setup" | "lowering" | "press";
-type PullupPhase = "hang" | "pull" | "top";
-type JackPhase = "center" | "wide";
 
 type ExerciseConfig = {
   id: ExerciseMode;
@@ -37,21 +26,6 @@ type ExerciseConfig = {
   standbyText: string;
   activeText: string;
 };
-
-// Put near the top of App.tsx
-type Connection = { start: number; end: number };
-
-const POSE_CONNECTIONS: Connection[] = [
-  { start: 11, end: 13 }, { start: 13, end: 15 }, // left arm
-  { start: 12, end: 14 }, { start: 14, end: 16 }, // right arm
-  { start: 11, end: 12 },                         // shoulders
-  { start: 23, end: 24 },                         // hips
-  { start: 11, end: 23 }, { start: 12, end: 24 }, // torso
-  { start: 23, end: 25 }, { start: 25, end: 27 }, // left leg
-  { start: 24, end: 26 }, { start: 26, end: 28 }, // right leg
-  { start: 27, end: 29 }, { start: 29, end: 31 }, // left foot
-  { start: 28, end: 30 }, { start: 30, end: 32 }, // right foot
-];
 
 const MODE_OPTIONS: ExerciseConfig[] = [
   {
@@ -143,6 +117,10 @@ const EXERCISE_CONFIG = MODE_OPTIONS.reduce(
   {} as Record<ExerciseMode, ExerciseConfig>
 );
 
+const SUPPORTED_POSE_MODES: readonly SupportedMode[] = ["squat", "plank"];
+const isSupportedPoseMode = (mode: ExerciseMode): mode is SupportedMode =>
+  (SUPPORTED_POSE_MODES as readonly ExerciseMode[]).includes(mode as SupportedMode);
+
 async function fetchExerciseLines(mode: ExerciseMode): Promise<string[]> {
   const fallback = [
     "Master every squat rep.",
@@ -160,7 +138,7 @@ async function fetchExerciseLines(mode: ExerciseMode): Promise<string[]> {
       `No numbering or bullets. One line per line.`;
 
     const result = await model.generateContent(prompt);
-    const t = result.response.text(); // <-- define `t`, not `text`
+    const t = result.response.text();
 
     const lines = t
       .split(/\r?\n/)
@@ -175,125 +153,111 @@ async function fetchExerciseLines(mode: ExerciseMode): Promise<string[]> {
   }
 }
 
-
+function formatHoldTime(ms: number): string {
+  if (ms <= 0) {
+    return "0.0s";
+  }
+  const totalSeconds = ms / 1000;
+  if (totalSeconds >= 60) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = Math.floor(totalSeconds % 60);
+    return minutes + ":" + seconds.toString().padStart(2, "0");
+  }
+  return totalSeconds.toFixed(1) + "s";
+}
 
 export default function App() {
   const [typedLines, setTypedLines] = useState<string[]>([]);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const landmarkerRef = useRef<PoseLandmarker | null>(null);
-
   const [activePage, setActivePage] = useState<"home" | "about">("home");
   const [mode, setMode] = useState<ExerciseMode>("squat");
-  const [isStarted, setIsStarted] = useState(false);
-  const [isVideoReady, setIsVideoReady] = useState(false);
-  const [repCount, setRepCount] = useState(0);
-  const [squatState, setSquatState] = useState<SquatPhase>("start");
-  const [pushupState, setPushupState] = useState<PushupPhase>("setup");
-  const [pullupState, setPullupState] = useState<PullupPhase>("hang");
-  const [jackState, setJackState] = useState<JackPhase>("center");
-  const [feedback, setFeedback] = useState("");
   const [isDemoPlaying, setIsDemoPlaying] = useState(false);
   const [demoKey, setDemoKey] = useState(0);
+  const [plankHoldMs, setPlankHoldMs] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const plankTimerRef = useRef<number | null>(null);
 
-  const lastSpeechTime = useRef(Date.now());
-  const speak = useCallback((t: string) => {
-    const now = Date.now();
-    if (now - lastSpeechTime.current > 3000) {
-      speechSynthesis.speak(new SpeechSynthesisUtterance(t));
-      lastSpeechTime.current = now;
-    }
-  }, []);
+  const supportedMode = isSupportedPoseMode(mode) ? mode : null;
+
+  const {
+    isModeSupported,
+    isModelReady,
+    isStarted,
+    isVideoReady,
+    repCount,
+    feedback: coachFeedback,
+    stateLabel,
+    appError,
+    start,
+    stop,
+  } = usePoseCoach({ mode: supportedMode, videoRef, canvasRef });
 
   const currentConfig = EXERCISE_CONFIG[mode];
+  const statusText = isStarted
+    ? "Camera live"
+    : isModeSupported
+    ? "Standby"
+    : "Mode unavailable";
+  const stageChipLabel = isDemoPlaying
+    ? "Demo"
+    : isStarted
+    ? "Analyzing"
+    : isModeSupported
+    ? "Ready"
+    : "Offline";
+  const metricLabel = mode === "plank" ? "Hold time" : "Rep counter";
+  const metricValue = isDemoPlaying
+    ? "--"
+    : mode === "plank"
+    ? isModeSupported && isStarted
+      ? formatHoldTime(plankHoldMs)
+      : "0.0s"
+    : String(repCount);
+  const stateDisplay = isDemoPlaying ? "DEMO" : isModeSupported ? stateLabel : "N/A";
+  const sessionStatus = !isModeSupported
+    ? "Mode offline"
+    : !isModelReady
+    ? "Loading pose intelligence"
+    : isStarted
+    ? (mode === "plank" && plankHoldMs > 0 ? "Hold " + formatHoldTime(plankHoldMs) : "Live analysis")
+    : isVideoReady
+    ? "Camera ready"
+    : "Coach idle";
+  const fallbackFeedback = isModeSupported
+    ? isStarted
+      ? currentConfig.activeText
+      : currentConfig.standbyText
+    : "MediaPipe tracking currently supports the selected labs.";
+  const bannerFeedback = isDemoPlaying
+    ? "Watch the demo, then start the camera when you are ready."
+    : coachFeedback || fallbackFeedback;
+  const feedback = appError ? `Error: ${appError}` : bannerFeedback;
 
-  useEffect(() => {
-    setRepCount(0);
-    setFeedback("");
-    setSquatState("start");
-    setPushupState("setup");
-    setPullupState("hang");
-    setJackState("center");
-    setIsDemoPlaying(false);
-    setDemoKey((k) => k + 1);
-  }, [mode]);
-
-  // --- Initialize MediaPipe
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      await tf.setBackend("webgl");
-      const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-      );
-      if (cancelled) return;
-      landmarkerRef.current = await PoseLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath:
-            "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
-          delegate: "GPU",
-        },
-        runningMode: "VIDEO",
-        numPoses: 1,
-      });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // --- Camera start
   const handleStart = async () => {
-    if (isDemoPlaying) setIsDemoPlaying(false);
-    const video = videoRef.current;
-    if (!video) return;
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 640, height: 480, facingMode: "user" },
-    });
-    video.srcObject = stream;
-
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error("Video error"));
-    });
-
-    await video.play();
-    setIsVideoReady(true);
-    setIsStarted(true);
-    setFeedback("");
+    if (isDemoPlaying) {
+      setIsDemoPlaying(false);
+    }
+    await start();
   };
+
   const handleStop = () => {
-    const v = videoRef.current;
-    if (v?.srcObject) {
-      (v.srcObject as MediaStream).getTracks().forEach(t => t.stop());
-      v.srcObject = null;
-    }
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.fillStyle = "black";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
-    }
-    setIsStarted(false);
-    setIsVideoReady(false);
-    setFeedback("");
-    setIsDemoPlaying(false);
+    stop();
   };
 
   const handleModeChange = (event: ChangeEvent<HTMLSelectElement>) => {
-    setMode(event.target.value as ExerciseMode);
+    const nextMode = event.target.value as ExerciseMode;
+    setMode(nextMode);
+    setIsDemoPlaying(false);
+    setDemoKey((key) => key + 1);
+    stop();
   };
 
   const handleShowDemo = () => {
     if (isStarted) {
-      handleStop();
+      stop();
     }
     setIsDemoPlaying(true);
-    setDemoKey((k) => k + 1);
-    setFeedback("");
+    setDemoKey((key) => key + 1);
   };
 
   const handleCloseDemo = () => {
@@ -303,285 +267,61 @@ export default function App() {
   const handleNavigate = (page: "home" | "about") => {
     if (page === activePage) return;
     if (page === "about") {
-      handleStop();
+      stop();
+      setIsDemoPlaying(false);
     }
     setActivePage(page);
   };
 
-
-  // --- Helpers
-  const angle = (a: number[], b: number[], c: number[]) => {
-    const r =
-      Math.atan2(c[1] - b[1], c[0] - b[0]) -
-      Math.atan2(a[1] - b[1], a[0] - b[0]);
-    let d = Math.abs((r * 180) / Math.PI);
-    if (d > 180) d = 360 - d;
-    return d;
-  };
-
-  const distance = (a: number[], b: number[]) => {
-    return Math.hypot(a[0] - b[0], a[1] - b[1]);
-  };
-
-  const analyzeSquat = useCallback(
-    (lm: any[]) => {
-      const hip = [lm[24].x, lm[24].y];
-      const knee = [lm[26].x, lm[26].y];
-      const ankle = [lm[28].x, lm[28].y];
-      const kneeAngle = angle(hip, knee, ankle);
-
-      if (kneeAngle >= 170) {
-        if (squatState === "down") {
-          setRepCount((p) => {
-            const n = p + 1;
-            speak(`Rep ${n}`);
-            return n;
-          });
-        }
-        setSquatState("up");
-      } else if (kneeAngle <= 100 && squatState === "up") {
-        setSquatState("down");
-        if (kneeAngle < 70) {
-          setFeedback("Too low! Aim for about 90°");
-          speak("Too low");
-        }
-      }
-    },
-    [squatState, speak]
-  );
-
-  const analyzePlank = useCallback(
-    (lm: any[]) => {
-      const shoulder = [lm[12].x, lm[12].y];
-      const hip = [lm[24].x, lm[24].y];
-      const ankle = [lm[28].x, lm[28].y];
-      const body = angle(shoulder, hip, ankle);
-      if (body < 160) {
-        setFeedback("Keep your body straight!");
-        speak("Straighten your body");
-      } else {
-        setFeedback("Good form!");
-      }
-    },
-    [speak]
-  );
-
-  const analyzePushup = useCallback(
-    (lm: any[]) => {
-      const shoulder = [lm[12].x, lm[12].y];
-      const elbow = [lm[14].x, lm[14].y];
-      const wrist = [lm[16].x, lm[16].y];
-      const elbowAngle = angle(shoulder, elbow, wrist);
-
-      if (elbowAngle >= 160) {
-        if (pushupState === "lowering") {
-          setRepCount((p) => {
-            const n = p + 1;
-            speak(`Rep ${n}`);
-            return n;
-          });
-        }
-        if (pushupState !== "press") {
-          setPushupState("press");
-          setFeedback("Strong lockout - brace your core.");
-        }
-      } else if (elbowAngle <= 90) {
-        if (pushupState !== "lowering") {
-          setPushupState("lowering");
-          setFeedback("Control the descent until elbows hit 90°.");
-        }
-      } else if (pushupState !== "setup") {
-        setPushupState("setup");
-      }
-    },
-    [pushupState, speak]
-  );
-
-  const analyzePullup = useCallback(
-    (lm: any[]) => {
-      const avgWristY = (lm[15].y + lm[16].y) / 2;
-      const avgShoulderY = (lm[11].y + lm[12].y) / 2;
-      const noseY = lm[0].y;
-
-      if (noseY <= avgShoulderY + 0.02) {
-        if (pullupState === "pull") {
-          setRepCount((p) => {
-            const n = p + 1;
-            speak(`Rep ${n}`);
-            return n;
-          });
-        }
-        if (pullupState !== "top") {
-          setPullupState("top");
-          setFeedback("Hold the top - drive elbows back.");
-        }
-      } else if (avgWristY - avgShoulderY > 0.18) {
-        if (pullupState !== "hang") {
-          setPullupState("hang");
-          setFeedback("Full hang - engage lats before the next pull.");
-        }
-      } else if (pullupState !== "pull") {
-        setPullupState("pull");
-        setFeedback("Lead with your chest and squeeze shoulder blades.");
-      }
-    },
-    [pullupState, speak]
-  );
-
-  const analyzeJumpingJack = useCallback(
-    (lm: any[]) => {
-      const leftAnkle = [lm[27].x, lm[27].y];
-      const rightAnkle = [lm[28].x, lm[28].y];
-      const leftWrist = [lm[15].x, lm[15].y];
-      const rightWrist = [lm[16].x, lm[16].y];
-      const ankleGap = distance(leftAnkle, rightAnkle);
-      const wristGap = distance(leftWrist, rightWrist);
-      const shoulderY = (lm[11].y + lm[12].y) / 2;
-      const wristY = (leftWrist[1] + rightWrist[1]) / 2;
-
-      if (ankleGap > 0.5 && wristGap > 0.35 && wristY < shoulderY) {
-        if (jackState === "center") {
-          setRepCount((p) => {
-            const n = p + 1;
-            speak(`Rep ${n}`);
-            return n;
-          });
-        }
-        if (jackState !== "wide") {
-          setJackState("wide");
-          setFeedback("Big extension - keep arms tall overhead.");
-        }
-      } else if (ankleGap < 0.3 && wristGap < 0.28) {
-        if (jackState !== "center") {
-          setJackState("center");
-          setFeedback("Snap back to center and brace your core.");
-        }
-      }
-    },
-    [jackState, speak]
-  );
-
-  // --- Frame loop
   useEffect(() => {
-    if (isDemoPlaying) return;
-    if (
-      !isStarted ||
-      !isVideoReady ||
-      !videoRef.current ||
-      !canvasRef.current ||
-      !landmarkerRef.current
-    )
+    if (mode !== "plank" || !isModeSupported) {
+      plankTimerRef.current = null;
+      setPlankHoldMs(0);
       return;
+    }
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d")!;
-    const draw = new DrawingUtils(ctx);
-
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    let raf = 0;
-    const loop = async () => {
-      const lm = landmarkerRef.current!;
-      const results = await lm.detectForVideo(video, performance.now());
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      if (results.landmarks?.[0]) {
-        const l = results.landmarks[0];
-        draw.drawLandmarks(l);
-        draw.drawConnectors(l, POSE_CONNECTIONS);
-
-        switch (mode) {
-          case "squat":
-            analyzeSquat(l);
-            break;
-          case "plank":
-            analyzePlank(l);
-            break;
-          case "pushup":
-            analyzePushup(l);
-            break;
-          case "pullup":
-            analyzePullup(l);
-            break;
-          case "jumpingJack":
-            analyzeJumpingJack(l);
-            break;
-          default:
-            analyzePlank(l);
-        }
+    if (!isStarted || isDemoPlaying) {
+      plankTimerRef.current = null;
+      if (!isStarted) {
+        setPlankHoldMs(0);
       }
+      return;
+    }
 
-      raf = requestAnimationFrame(loop);
+    let frame = 0;
+    const update = (time: number) => {
+      if (plankTimerRef.current === null) {
+        plankTimerRef.current = time;
+      }
+      setPlankHoldMs(time - plankTimerRef.current);
+      frame = requestAnimationFrame(update);
     };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [
-    isStarted,
-    isVideoReady,
-    mode,
-    analyzePlank,
-    analyzeSquat,
-    analyzePushup,
-    analyzePullup,
-    analyzeJumpingJack,
-    isDemoPlaying,
-  ]);
 
-  // --- Cleanup
-  useEffect(() => {
+    frame = requestAnimationFrame(update);
     return () => {
-      const v = videoRef.current;
-      if (v?.srcObject) {
-        (v.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
-      }
+      cancelAnimationFrame(frame);
+      plankTimerRef.current = null;
     };
-  }, []);
+  }, [mode, isModeSupported, isStarted, isDemoPlaying]);
 
-  const stateDisplay = (() => {
-    if (isDemoPlaying) return "DEMO";
-    switch (mode) {
-      case "squat":
-        return { start: "SET", up: "UP", down: "LOW" }[squatState];
-      case "pushup":
-        return { setup: "SET", lowering: "LOW", press: "TOP" }[pushupState];
-      case "pullup":
-        return { hang: "HANG", pull: "PULL", top: "TOP" }[pullupState];
-      case "jumpingJack":
-        return { center: "CENTER", wide: "WIDE" }[jackState];
-      case "plank":
-        return isStarted ? "HOLD" : "SET";
-      default:
-        return "READY";
-    }
-  })();
-
-useEffect(() => {
-  let alive = true;
-  (async () => {
-    try {
-      const lines = await fetchExerciseLines(mode);
-      if (alive) setTypedLines(lines);
-    } catch (e) {
-      console.error(e);
-      if (alive) {
-        setTypedLines([
-          "Master every squat rep.",
-          "Lock in a rock-solid plank.",
-          "Dial in push-up mechanics.",
-        ]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const lines = await fetchExerciseLines(mode);
+        if (alive) setTypedLines(lines);
+      } catch (error) {
+        console.error(error);
       }
-    }
-  })();
-  return () => { alive = false; };
-}, [mode]);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [mode]);
 
   return (
     <div className="app-background">
-      <div className="app-ribbon">owl hawks 2025</div>
+      <div className="app-ribbon">owl hacks 2025</div>
       <div className="app-frame">
         <header className="app-header">
           <div className="brand">
@@ -595,6 +335,7 @@ useEffect(() => {
               <p className="brand-subtitle">Real-time MediaPipe biomechanics</p>
             </div>
           </div>
+
           <div className="header-nav" role="navigation" aria-label="Primary">
             <div className="nav-buttons">
               <button
@@ -613,12 +354,13 @@ useEffect(() => {
               </button>
             </div>
           </div>
+
           {activePage === "home" && (
             <div className="header-actions">
               <span className="mode-chip">{currentConfig.label}</span>
-              <div className="header-status" aria-live="polite">
+              <div className="header-status" aria-live="polite" title={sessionStatus}>
                 <span className={`status-dot ${isStarted ? "is-live" : ""}`} />
-                <span className="status-text">{isStarted ? "Camera live" : "Standby"}</span>
+                <span className="status-text">{statusText}</span>
               </div>
             </div>
           )}
@@ -672,8 +414,8 @@ useEffect(() => {
 
               <div className="stat-card" aria-live="polite">
                 <div className="stat">
-                  <span className="stat-label">Rep counter</span>
-                  <span className="stat-value">{isDemoPlaying || mode === "plank" ? "--" : repCount}</span>
+                  <span className="stat-label">{metricLabel}</span>
+                  <span className="stat-value">{metricValue}</span>
                 </div>
                 <div className="stat">
                   <span className="stat-label">Current state</span>
@@ -701,7 +443,7 @@ useEffect(() => {
               <div className="video-stage">
                 <div className="video-stage__header">
                   <span className="video-stage__title">{currentConfig.stageLabel}</span>
-                  <span className="video-stage__chip">{isDemoPlaying ? "Demo" : isStarted ? "Analyzing" : "Ready"}</span>
+                  <span className="video-stage__chip">{stageChipLabel}</span>
                 </div>
                 <div className="video-wrapper">
                   <video
@@ -744,14 +486,8 @@ useEffect(() => {
                 </div>
               </div>
 
-              <div className={`feedback-banner ${feedback || isDemoPlaying ? "has-text" : ""}`}>
-                {isDemoPlaying
-                  ? "Watch the demo, then start the camera when you're ready."
-                  : feedback
-                  ? feedback
-                  : isStarted
-                  ? currentConfig.activeText
-                  : currentConfig.standbyText}
+              <div className={`feedback-banner ${feedback ? "has-text" : ""}`}>
+                {feedback}
               </div>
             </section>
           </main>
@@ -772,7 +508,7 @@ useEffect(() => {
                 measurable, motivating way.
               </p>
               <p>
-                This approach supports Next Frontier Health&apos;s mission of sustainable physical wellness:
+                This approach supports Next Frontier Health's mission of sustainable physical wellness:
                 accessible coaching, data-backed insights, and AI guidance that scales to every athlete,
                 patient, or wellness enthusiast looking to stay active.
               </p>
@@ -786,5 +522,4 @@ useEffect(() => {
       </div>
     </div>
   );
-
 }
