@@ -58,6 +58,12 @@ Afterwards, reset the temporary commit if you do not want to keep `dist/` tracke
 - `npm run preview` - serves the last production build locally.
 - `npm run lint` - runs ESLint across the codebase.
 
+# Rebuild Build Site Script just add folder 
+sudo rsync -av --delete dist/ /var/www/{folderName}
+sudo chown -R www-data:www-data /var/www/{folderName}
+sudo find /var/www/{folderName} -type d -exec chmod 755 {} \;
+sudo find /var/www/{folderName} -type f -exec chmod 644 {} \;
+
 ## Troubleshooting Notes
 - If MediaPipe fails to initialize, reload the page after confirming camera permissions were granted.
 - Generative copy falls back to static lines whenever `VITE_GEMINI_API_KEY` is missing or the Gemini API returns an error.
