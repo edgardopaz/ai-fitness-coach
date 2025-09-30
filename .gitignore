@@ -25,3 +25,5 @@ dist-ssr
 
 .env.local
 .gitignore
+.env
+formwise_key.pem
