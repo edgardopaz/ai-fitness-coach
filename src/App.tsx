@@ -127,6 +127,7 @@ const SUPPORTED_POSE_MODES: readonly SupportedMode[] = [
 const isSupportedPoseMode = (mode: ExerciseMode): mode is SupportedMode =>
   (SUPPORTED_POSE_MODES as readonly ExerciseMode[]).includes(mode);
 
+// Pull energetic hero copy from Gemini when available, falling back to canned lines offline.
 async function fetchExerciseLines(mode: ExerciseMode): Promise<string[]> {
   const fallback = [
     "Master every squat rep.",
@@ -181,6 +182,7 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  // Only hand supported movements to the pose coach to avoid unsupported modes.
   const supportedMode = isSupportedPoseMode(mode) ? mode : null;
 
   const {
@@ -276,6 +278,7 @@ export default function App() {
     setActivePage(page);
   };
 
+  // Refresh the typed headline whenever the active exercise changes.
   useEffect(() => {
     let alive = true;
     (async () => {

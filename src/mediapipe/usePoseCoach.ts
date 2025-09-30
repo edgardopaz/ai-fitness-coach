@@ -128,6 +128,7 @@ const distance = (a: Point2D, b: Point2D) => {
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
 };
 
+// Apply exponential smoothing to reduce jitter from landmark noise.
 const smoothValue = (ref: { current: number | null }, value: number | null, alpha: number) => {
   if (value === null || Number.isNaN(value)) {
     return null;
@@ -185,6 +186,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
   const [plankState, setPlankState] = useState<PlankPhase>("setup");
   const [plankHoldMs, setPlankHoldMs] = useState(0);
 
+  // Throttle speech synthesis so cues don't overlap.
   const speak = useCallback(
     (text: string, options: SpeakOptions = {}) => {
       if (typeof window === "undefined" || !("speechSynthesis" in window)) {
@@ -206,6 +208,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     []
   );
 
+  // Central place to update on-screen and spoken coaching cues.
   const setFeedbackMessage = useCallback(
     (message: string, options: FeedbackOptions = {}) => {
       setFeedback((previous) => {
@@ -227,6 +230,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     [speak]
   );
 
+  // Reset derived pose measurements and per-mode state between sessions.
   const clearPoseRefs = useCallback(() => {
     standingHipRef.current = null;
     bottomHipRef.current = null;
@@ -260,6 +264,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     setPlankHoldMs(0);
   }, []);
 
+  // Analyze squat depth and stance width to gatekeep rep counting and cues.
   const analyzeSquat = useCallback(
     (landmarks: LandmarkList) => {
       const rightHip = getPoint(landmarks, 24);
@@ -304,6 +309,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
           : null;
       const effectiveKneeAngle = kneeAngle ?? rawKneeAngle;
 
+      // Measure hip depth and stance width to assess squat positioning.
       const hipVerticalDiff = hipY - kneeY;
       const hipWidth = rightHip && leftHip ? Math.abs(rightHip[0] - leftHip[0]) : null;
       const kneeWidth = rightKnee && leftKnee ? Math.abs(rightKnee[0] - leftKnee[0]) : null;
@@ -336,6 +342,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const hipBelowKneeStrong = hipVerticalDiff >= HIP_BELOW_KNEE_THRESHOLD * HIP_BELOW_THRESHOLD_MARGIN;
       const bottomDetected = depthSufficient && (kneeAngleIndicatesBottom || hipBelowKneeStrong || kneesWideBottom);
 
+      // Athlete is standing tall - refresh baselines, potentially score a rep, and cue the next descent.
       if (isStanding) {
         standingHoldFramesRef.current = Math.min(standingHoldFramesRef.current + 1, 60);
         bottomHoldFramesRef.current = 0;
@@ -382,6 +389,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
         bottomHoldFramesRef.current -= 1;
       }
 
+      // Detect the bottom position once hip depth and knee angles confirm a full squat.
       if (bottomDetected && bottomHoldFramesRef.current >= MIN_BOTTOM_HOLD_FRAMES && squatState === "up") {
         bottomHipRef.current = hipY;
         setSquatState("down");
@@ -406,6 +414,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     [squatState, speak, setFeedbackMessage]
   );
 
+  // Track elbow flexion to detect push-up phases and rep completion.
   const analyzePushup = useCallback(
     (landmarks: LandmarkList) => {
       const shoulder = getPoint(landmarks, 12);
@@ -418,6 +427,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
 
       const elbowAngle = angleBetween(shoulder, elbow, wrist);
 
+      // Bottom reached once elbows close past the depth threshold.
       if (elbowAngle <= PUSHUP_BOTTOM_ANGLE) {
         pushupBottomSeenRef.current = true;
         if (pushupState !== "lowering") {
@@ -427,6 +437,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
         return;
       }
 
+      // Full lockout confirms the press portion of the rep.
       if (elbowAngle >= PUSHUP_TOP_ANGLE) {
         if (pushupState === "lowering") {
           if (pushupBottomSeenRef.current) {
@@ -460,6 +471,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     [pushupState, setFeedbackMessage, speak]
   );
 
+  // Compare wrist, shoulder, and nose heights to validate hang depth and chin-over-bar lockout.
   const analyzePullup = useCallback(
     (landmarks: LandmarkList) => {
       const leftWrist = getPoint(landmarks, 15);
@@ -514,6 +526,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     [pullupState, setFeedbackMessage, speak]
   );
 
+  // Monitor limb separation and adaptive baselines to count clean jumping-jack cycles.
   const analyzeJumpingJack = useCallback(
     (landmarks: LandmarkList) => {
       const leftAnkle = getPoint(landmarks, 27);
@@ -538,6 +551,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const hipWidthX =
         leftHip && rightHip ? Math.max(Math.abs(leftHip[0] - rightHip[0]), 0.001) : shoulderWidthX;
 
+      // Establish neutral stance baselines so thresholds adapt to the athlete.
       const neutralLegBaseline =
         jackNeutralAnkleGapRef.current ??
         Math.max(JACK_MIN_NEUTRAL_ANKLE_GAP, hipWidthX * JACK_DEFAULT_NEUTRAL_LEG_RATIO);
@@ -578,6 +592,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const timeSinceFeedback = now - lastJackFeedbackRef.current;
       const canGiveFeedback = timeSinceFeedback > JACK_FEEDBACK_COOLDOWN_MS;
 
+      // Count a rep when arms and legs hit the wide position together.
       const widePoseStrong = armsOverhead && legsWideEnough;
       const widePoseBorderline =
         !widePoseStrong &&
@@ -625,6 +640,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
         return;
       }
 
+      // Reset readiness once the athlete returns to the neutral position.
       if (armsDown && legsTogetherEnough && wristsAtSides) {
         jackCenterReadyRef.current = true;
         jackNeutralAnkleGapRef.current =
@@ -644,6 +660,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
         return;
       }
 
+      // Offer corrective cues when the athlete stalls near a transition.
       if (canGiveFeedback) {
         if (jackCenterReadyRef.current && (legsAlmostWide || armsAlmostOverhead)) {
           if (!armsOverhead && legsWideEnough) {
@@ -712,6 +729,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     },
     [jackState, setFeedbackMessage, speak]
   );
+  // Watch body angle stability to run the plank timer and surface posture fixes.
   const analyzePlank = useCallback(
     (landmarks: LandmarkList, timestamp: number) => {
       const shoulder = getPoint(landmarks, 12);
@@ -724,6 +742,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const shoulderHipDeltaY = Math.abs(shoulder[1] - hip[1]);
       const hipAnkleDeltaY = Math.abs(hip[1] - ankle[1]);
 
+      // Treat large vertical gaps as leaving the plank - pause the timer and prompt setup cues.
       if (shoulderHipDeltaY > PLANK_MAX_SHOULDER_HIP_DELTA || hipAnkleDeltaY > PLANK_MAX_HIP_ANKLE_DELTA) {
         plankStandingFramesRef.current = Math.min(plankStandingFramesRef.current + 1, 120);
         if (plankStandingFramesRef.current >= PLANK_STANDING_GRACE_FRAMES) {
@@ -750,6 +769,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
       const bodyAngleRaw = angleBetween(shoulder, hip, ankle);
       const bodyAngle = smoothValue(plankAngleRef, bodyAngleRaw, SMOOTHING_ALPHA_PLANK) ?? bodyAngleRaw;
 
+      // Strong angles keep the timer running and quietly reinforce good form.
       if (bodyAngle >= PLANK_STRONG_ANGLE) {
         plankLowFramesRef.current = Math.max(plankLowFramesRef.current - 1, 0);
 
@@ -785,7 +805,9 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
 
       plankLowFramesRef.current += 1;
 
+      // Slight sag still counts as a hold but triggers progressive warnings.
       if (bodyAngle >= PLANK_MIN_ANGLE) {
+        // Hips dropped too far - require a reset before continuing.
         if (plankState !== "adjust") {
           setPlankState("adjust");
         }
@@ -818,6 +840,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     [plankState, setFeedbackMessage]
   );
 
+  // Load the MediaPipe WASM bundle and pose model once when the hook mounts.
   useEffect(() => {
     let isCancelled = false;
 
@@ -865,6 +888,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     };
   }, []);
 
+  // Stop any active camera stream and clear out tracking state.
   const stop = useCallback(() => {
     const videoElement = videoRef.current;
     const canvasElement = canvasRef.current;
@@ -891,6 +915,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     });
   }, [canvasRef, videoRef, clearPoseRefs, setFeedbackMessage]);
 
+  // Initialize camera capture, wire it into MediaPipe, and prime hook state.
   const start = useCallback(async () => {
     if (!isSupportedMode(mode)) {
       stop();
@@ -959,6 +984,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     }
   }, [mode, setFeedbackMessage, videoRef, clearPoseRefs, stop]);
 
+  // When the mode changes, reset counters and update the idle coaching copy.
   useEffect(() => {
     if (!isSupportedMode(mode)) {
       clearPoseRefs();
@@ -976,6 +1002,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
     );
   }, [mode, clearPoseRefs]);
 
+  // Once the camera is live, run pose detection on each rendered frame.
   useEffect(() => {
     if (!isStarted || !isVideoReady || !isSupportedMode(mode)) {
       return;
@@ -1006,6 +1033,7 @@ export function usePoseCoach({ mode, videoRef, canvasRef }: UsePoseCoachArgs): U
         return;
       }
 
+      // Skip processing duplicated frames to avoid redundant work.
       const currentTime = videoElement.currentTime;
       if (currentTime === lastVideoTimeRef.current) {
         animationFrame = requestAnimationFrame(renderLoop);
